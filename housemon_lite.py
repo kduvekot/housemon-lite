@@ -330,6 +330,14 @@ class Handler(SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass        # browser went away
 
+    def end_headers(self):
+        # Browsers may keep a copy of the page files, but must ask first whether
+        # it changed (answered with a short "304 Not Modified" when it did not),
+        # so an update shows up at the next reload.
+        if not self.path.startswith(("/events", "/api/")):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def log_message(self, fmt, *args):
         log.debug("%s %s", self.address_string(), fmt % args)
 
