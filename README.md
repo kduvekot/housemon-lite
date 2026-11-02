@@ -59,10 +59,18 @@ between the last two pulses (milliseconds; above 60000, `t - 60000` seconds).
   times too high for 0.5 Wh pulses (checked against the P1 meter and the
   inverters' own counters);
 - when no new pulse has arrived for longer than `t`, the real power must be
-  lower, so the page uses the time since the last change instead.
+  lower: at most `pulseWh` divided by the time since the last pulse (which the
+  Pi keeps per channel; measured from packet to packet on the Pi's clock, not
+  the browser's);
+- when no pulse has come for `stopFactor` (default 3) times the last interval,
+  and at least 10 s (packets come every few seconds), the page shows 0 W: at
+  that power the next pulse was due long ago, so the power has in practice
+  stopped (e.g. solar at sunset). This is an assumption, not a measurement;
+  the next pulse corrects it. Without it, a quiet channel would take up to an
+  hour to reach 0 W (0.5 Wh over an hour is 0.5 W).
 
-Channel names, which channels count as house or solar, the pulse value and
-the RF12 node id are in `web/config.json`.
+Channel names, which channels count as house or solar, the pulse value, the
+stop factor and the RF12 node id are in `web/config.json`.
 
 ## Install
 

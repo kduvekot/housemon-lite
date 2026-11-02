@@ -6,7 +6,8 @@ Per UTC hour:
             (for the graph);
   channels  S0 pulses per node and channel in that hour (for "today");
   gridIn, gridOut   the S0 grid estimate (house minus solar per 30 s) in pulses;
-  first, last       time of the first and last S0 line in that hour.
+  first, last       time of the first and last S0 line in that hour;
+  lastPulse         per node and channel, the time of its last pulse in that hour.
 
 The current hour is filled live. A completed hour is stored once as a small
 JSON file (cache/hours/YYYYMMDDHH.json); at start-up only hours that are not
@@ -26,7 +27,7 @@ log = logging.getLogger("housemon-lite")
 
 P1_NET = re.compile(rb"1-0:1\.7\.0\((\d+\.\d+)\*kW\).*?1-0:2\.7\.0\((\d+\.\d+)\*kW\)", re.S)
 SETTLE = timedelta(minutes=10)   # an hour is final this long after it ended
-FORMAT = 2                        # cache layout; older files are rebuilt
+FORMAT = 3                        # cache layout; older files are rebuilt
 
 
 def hour_of(when):
@@ -35,7 +36,7 @@ def hour_of(when):
 
 def empty_hour():
     return {"minutes": [[0, 0, 0.0, 0] for _ in range(60)],   # house, solar, P1 W-sum, P1 count
-            "channels": {}, "gridIn": 0, "gridOut": 0, "first": None, "last": None}
+            "channels": {}, "gridIn": 0, "gridOut": 0, "first": None, "last": None, "lastPulse": {}}
 
 
 def p1_net(telegram):
@@ -140,8 +141,11 @@ class HourStore:
         if not delta:
             return                  # first packet: nothing to add yet
         ch = rec["channels"].setdefault(str(node), [0] * 8)
+        seen = rec["lastPulse"].setdefault(str(node), {})
         for c, n in delta.items():
             ch[c - 1] += n
+            if n:
+                seen[str(c)] = stamp
         rec["gridIn"] += totals.grid_in - grid_before[0]
         rec["gridOut"] += totals.grid_out - grid_before[1]
         if node == self.grid["node"]:
@@ -231,6 +235,15 @@ class HourStore:
             "grid": {"in": grid_in, "out": grid_out},
             "first": first, "last": last,
         }
+
+    def last_pulse(self, node):
+        """Per channel, the time of its last pulse in the hours kept (UTC, ISO)."""
+        out = {}
+        for rec in self.hours.values():
+            for c, stamp in rec.get("lastPulse", {}).get(str(node), {}).items():
+                if stamp > out.get(c, ""):
+                    out[c] = stamp
+        return out
 
     # --- for the page --------------------------------------------------------------
 

@@ -50,6 +50,15 @@ const fmt = (v, digits = 0) =>
   v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const clock = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const kwh = (pulses) => (pulses * config.s0.pulseWh) / 1000;
+// "14:03:12" today, "yesterday 22:10", or "Sat 31 Oct 08:15" for older
+function pulseTime(ms, now) {
+  const d = new Date(ms), today = new Date(now);
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (day(d) === day(today)) return clock(d);
+  if (day(today) - day(d) === 86400000) return `yesterday ${hm}`;
+  return `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${hm}`;
+}
 
 // --- S0 pulse meters (RF12 node, decoded like HouseMon's pulseNode) -------------
 
@@ -63,6 +72,7 @@ function decodeS0(msg) {
   if ((header & 0x1f) !== cfg.node || b.length < 32) return;
 
   const now = Date.now();
+  const packetTime = Date.parse(msg.time);         // when the Pi received this packet
   const wattPerMs = cfg.pulseWh * 3.6e6;   // W x ms for one pulse (0.5 Wh -> 1,800,000)
   const sumNow = { house: 0, solar: 0 };
   const sumToday = { house: 0, solar: 0 };
@@ -74,15 +84,31 @@ function decodeS0(msg) {
     if (t > 60000) t = (t - 60000) * 1000;         // above 60000 the unit is seconds
 
     const st = (s0state[ch] ??= { count, changed: null });
-    if (st.count !== count) {
+    const pulsedNow = st.count !== count;            // the counter went up in this packet
+    if (pulsedNow) {
       st.count = count;
       st.changed = now;
     }
 
+    // When this channel last pulsed: from the Pi (it counts every packet, also
+    // before this page was opened); else what this page itself saw.
+    const lastIso = msg.lastPulse?.[ch];
+    const lastPulse = lastIso ? Date.parse(`${lastIso}Z`) : st.changed;
+
+    // Time since the last pulse, in packet time: this packet's time minus the
+    // last pulse's, both from the Pi's clock (not this device's), less 1 s for
+    // the last pulse being rounded to whole seconds. 0 when it pulsed just now.
+    const since = pulsedNow || lastPulse === null ? 0 : Math.max(0, packetTime - lastPulse - 1000);
+
     // Power from the pulse interval. When no new pulse has come for longer than
-    // that interval, the real power must be lower: use the time since then.
+    // that interval, the real power must be lower: at most one pulse per `since`.
     let watt = t > 0 ? wattPerMs / t : 0;
-    if (st.changed !== null && now - st.changed > t) watt = Math.min(watt, wattPerMs / (now - st.changed));
+    if (since > t) watt = Math.min(watt, wattPerMs / since);
+    // At that power the next pulse was due after t. If it has not come after
+    // stopFactor x t (and at least 10 s: packets come every few seconds),
+    // assume the power stopped (e.g. solar at sunset, a device switched off).
+    // An assumption, not a measurement: the next pulse corrects it.
+    if (t > 0 && since > Math.max((cfg.stopFactor ?? 3) * t, 10000)) watt = 0;
     if (count === 0) watt = 0;
 
     // Today: pulses counted by the Pi since midnight (it handles node restarts).
@@ -91,7 +117,7 @@ function decodeS0(msg) {
     const [pw, td, last] = row("s0", `s0-${ch}`, info.name, ["num", "num", "muted"]);
     setText(pw, `${fmt(watt)} W`);
     setText(td, today === null ? "–" : `${fmt(today, 3)} kWh`);
-    last.textContent = st.changed ? clock(new Date(st.changed)) : "–";
+    last.textContent = lastPulse ? pulseTime(lastPulse, now) : "more than 36 h ago";
     if (info.kind) {
       sumNow[info.kind] += watt;
       if (today !== null) sumToday[info.kind] += today;
