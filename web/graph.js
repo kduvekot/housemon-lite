@@ -69,24 +69,46 @@ function draw() {
       svgEl("text", { x: x(i), y: H - 10, "text-anchor": "middle", class: "axis" }, svg).textContent = fmtTime(t);
   }
 
-  // one path per run of known values; grid: red when taken, green when
-  // delivered, dashed where estimated from S0
-  const line = (k, keep, color, dash) => {
+  // A line only breaks where data is missing. `keep` picks the minutes of one
+  // style (e.g. estimated or not); where the style changes, the next part
+  // starts at the last point of the previous one, so the parts connect.
+  const pathData = (k, keep) => {
     let d = "", pen = false;
     for (let i = i0; i < n; i++) {
       const v = value(k, i);
-      if (v == null || !keep(i, v)) { pen = false; continue; }
+      if (v == null) { pen = false; continue; }
+      if (!keep(i)) {
+        if (pen) d += `L${x(i).toFixed(1)},${y(v).toFixed(1)}`;   // finish into the next part
+        pen = false;
+        continue;
+      }
+      if (!pen && i > i0 && value(k, i - 1) != null) {               // start from the previous point
+        d += `M${x(i - 1).toFixed(1)},${y(value(k, i - 1)).toFixed(1)}`;
+        pen = true;
+      }
       d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
       pen = true;
     }
-    if (d) svgEl("path", { d, fill: "none", stroke: css(color), "stroke-width": 1.6, "stroke-dasharray": dash || "" }, svg);
+    return d;
   };
+  const stroke = (d, color, dash, clip) => {
+    if (d) svgEl("path", { d, fill: "none", stroke: css(color), "stroke-width": 1.6,
+                           "stroke-dasharray": dash || "", "clip-path": clip ? `url(#${clip})` : "" }, svg);
+  };
+
+  // Grid is one line, coloured by where it is: red above 0 (taken), green
+  // below 0 (delivered). It is drawn twice, each copy cut off at the zero
+  // line, so the colour changes exactly at 0 and the line never breaks.
+  // Dashed where estimated from S0.
+  const defs = svgEl("defs", {}, svg);
+  svgEl("rect", { x: 0, y: 0, width: W, height: y(0) }, svgEl("clipPath", { id: "above" }, defs));
+  svgEl("rect", { x: 0, y: y(0), width: W, height: H - y(0) }, svgEl("clipPath", { id: "below" }, defs));
   for (const k of keys) {
-    if (k !== "grid") { line(k, () => true, COLORS[k]); continue; }
-    line(k, (i, v) => v >= 0 && !estimated(i), "--in");
-    line(k, (i, v) => v <= 0 && !estimated(i), "--out");
-    line(k, (i, v) => v >= 0 && estimated(i), "--in", "4 3");
-    line(k, (i, v) => v <= 0 && estimated(i), "--out", "4 3");
+    if (k !== "grid") { stroke(pathData(k, () => true), COLORS[k]); continue; }
+    for (const [clip, color] of [["above", "--in"], ["below", "--out"]]) {
+      stroke(pathData(k, (i) => !estimated(i)), color, "", clip);
+      stroke(pathData(k, (i) => estimated(i)), color, "4 3", clip);
+    }
   }
 
   // crosshair with the values of one minute, on tap or hover
