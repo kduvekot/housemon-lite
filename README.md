@@ -1,0 +1,104 @@
+# housemon-lite
+
+A lite version of the housemon: a small, modern live view of the energy data
+that [jeenode-listener](https://github.com/kduvekot/jeenode-listener) (S0 pulse
+meters over RF12) and [p1-logger](https://github.com/kduvekot/p1-logger)
+(P1 smart-meter telegrams) collect. Made to run on a Raspberry Pi 1.
+
+Current readings (W) updated live, today so far (kWh, from midnight Dutch
+time), the last 7 days, and a graph of the last 36 hours (house, solar and
+grid per minute); a value lights up briefly when it changes, as in
+the original HouseMon. No graphs or admin yet.
+
+## How it works
+
+```
+loggers ──> raw log files ──> housemon_lite.py ──SSE──> browser (web/app.js)
+            (unchanged)        reads new bytes            decodes, checks,
+                               once a second               displays
+```
+
+- **The Pi does almost nothing.** `housemon_lite.py` (Python standard library
+  only) checks once a second whether the log files have grown, keeps the
+  newest S0 line per RF12 node and the newest complete P1 telegram, and pushes
+  them unchanged over Server-Sent Events (`/events`). `/api/latest` returns the
+  same as JSON.
+- **Per day** (`daystats.py`, local days, `--tz`, default Europe/Amsterdam):
+  for P1 only the meter reading at midnight and before the next midnight are
+  needed (the first or last few KB of one hourly file); S0 pulses are added up
+  line by line, across node restarts and counter wraps. Today is counted as
+  the lines come in. A completed day is computed once and cached as a small
+  JSON file in the service's state directory (`/var/lib/housemon-lite`); it
+  is only computed again if its source files change. Days the logging did
+  not cover completely are marked.
+- **Grid without P1**: for days without P1 data the grid figures are
+  estimated from S0, house minus solar per 30 s (positive = in, negative =
+  out), and marked with ≈. Checked against a real P1 meter: within 1.5 %.
+- **Graph** (`series.py`, `graph.html`): per minute the house and solar pulses
+  and the average P1 grid power, kept per UTC hour; completed hours are
+  cached like the days. `/api/series?hours=36` returns the per-minute averages
+  in W; the page draws them as SVG (no library) and refreshes every minute.
+- **Extra S0 data** (optional): S0 log files in the same layout in
+  `/var/lib/housemon-lite-backfill/s0` (or `--s0-extra-dir`) are merged with
+  the logger's, e.g. to fill the last days from another receiver. Read only
+  if the directory exists; it can simply be removed once those days have
+  left the 7-day table.
+- **The browser does the work**: decoding the S0 packets, parsing the P1
+  telegram including its CRC check (damaged telegrams are skipped), and the
+  display. Plain JavaScript and CSS, no framework, no build step.
+
+## S0 decoding
+
+Same packet layout as HouseMon's `pulseNode` driver: after the header byte,
+8 channels of two little-endian 16-bit values, a pulse counter and the time
+between the last two pulses (milliseconds; above 60000, `t - 60000` seconds).
+
+- energy: counter x `pulseWh` (0.5 Wh per pulse, 2000 pulses/kWh); the
+  counter starts at 0 when the node powers up and wraps at 65536;
+- power: `pulseWh x 3,600,000 / t` W. HouseMon used `18,000,000 / t`, ten
+  times too high for 0.5 Wh pulses (checked against the P1 meter and the
+  inverters' own counters);
+- when no new pulse has arrived for longer than `t`, the real power must be
+  lower: at most `pulseWh` divided by the time since the last pulse (which the
+  Pi keeps per channel; measured from packet to packet on the Pi's clock, not
+  the browser's);
+- when no pulse has come for `stopFactor` (default 3) times the last interval,
+  and at least 10 s (packets come every few seconds), the page shows 0 W: at
+  that power the next pulse was due long ago, so the power has in practice
+  stopped (e.g. solar at sunset). This is an assumption, not a measurement;
+  the next pulse corrects it. Without it, a quiet channel would take up to an
+  hour to reach 0 W (0.5 Wh over an hour is 0.5 W).
+
+Channel names, which channels count as house or solar, the pulse value, the
+stop factor and the RF12 node id are in `web/config.json`.
+
+## Install
+
+```sh
+sudo install -d /opt/housemon-lite/web
+sudo install -m 0644 housemon_lite.py daystats.py series.py /opt/housemon-lite/
+sudo install -m 0644 web/* /opt/housemon-lite/web/
+sudo install -m 0644 housemon-lite.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now housemon-lite.service
+```
+
+Then open `http://<pi>:3333/`. The service runs as a temporary user that can
+only read files (`DynamicUser`, `CAP_DAC_READ_SEARCH`), so the loggers'
+private directories stay as they are.
+
+Options: `housemon_lite.py --help` (port, bind address, log directories,
+time zone of the day boundary).
+
+## Files
+
+| File | |
+|---|---|
+| `housemon_lite.py` | the server |
+| `daystats.py` | per-day figures (midnight readings, S0 pulse totals) |
+| `series.py` | per-minute figures for the graph |
+| `web/index.html`, `web/style.css` | the page (light and dark theme) |
+| `web/app.js` | decoding and display |
+| `web/graph.html`, `web/graph.js` | the graph |
+| `web/config.json` | channel names and settings |
+| `housemon-lite.service` | systemd unit |
