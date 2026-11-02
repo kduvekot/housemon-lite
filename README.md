@@ -5,8 +5,9 @@ that [jeenode-listener](https://github.com/kduvekot/jeenode-listener) (S0 pulse
 meters over RF12) and [p1-logger](https://github.com/kduvekot/p1-logger)
 (P1 smart-meter telegrams) collect. Made to run on a Raspberry Pi 1.
 
-First version: current readings only, updated live; a value lights up briefly
-when it changes, as in the original HouseMon. No graphs or admin yet.
+Current readings (W) updated live, today so far (kWh, from midnight Dutch
+time) and the last 7 days; a value lights up briefly when it changes, as in
+the original HouseMon. No graphs or admin yet.
 
 ## How it works
 
@@ -21,6 +22,12 @@ loggers ──> raw log files ──> housemon_lite.py ──SSE──> browser 
   newest S0 line per RF12 node and the newest complete P1 telegram, and pushes
   them unchanged over Server-Sent Events (`/events`). `/api/latest` returns the
   same as JSON.
+- **Per day** (`daystats.py`, local days, `--tz`, default Europe/Amsterdam):
+  for P1 only the meter reading at midnight and before the next midnight are
+  needed (the first or last few KB of one hourly file); S0 pulses are added up
+  line by line, across node restarts and counter wraps. Today is counted as
+  the lines come in; a completed day is computed once and kept in memory.
+  Days the logging did not cover completely are marked.
 - **The browser does the work**: decoding the S0 packets, parsing the P1
   telegram including its CRC check (damaged telegrams are skipped), and the
   display. Plain JavaScript and CSS, no framework, no build step.
@@ -46,7 +53,7 @@ the RF12 node id are in `web/config.json`.
 
 ```sh
 sudo install -d /opt/housemon-lite/web
-sudo install -m 0644 housemon_lite.py /opt/housemon-lite/
+sudo install -m 0644 housemon_lite.py daystats.py /opt/housemon-lite/
 sudo install -m 0644 web/* /opt/housemon-lite/web/
 sudo install -m 0644 housemon-lite.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -57,13 +64,15 @@ Then open `http://<pi>:3333/`. The service runs as a temporary user that can
 only read files (`DynamicUser`, `CAP_DAC_READ_SEARCH`), so the loggers'
 private directories stay as they are.
 
-Options: `housemon_lite.py --help` (port, bind address, log directories).
+Options: `housemon_lite.py --help` (port, bind address, log directories,
+time zone of the day boundary).
 
 ## Files
 
 | File | |
 |---|---|
 | `housemon_lite.py` | the server |
+| `daystats.py` | per-day figures (midnight readings, S0 pulse totals) |
 | `web/index.html`, `web/style.css` | the page (light and dark theme) |
 | `web/app.js` | decoding and display |
 | `web/config.json` | channel names and settings |

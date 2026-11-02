@@ -1,9 +1,12 @@
 // housemon-lite browser side: receives raw S0 lines and P1 telegrams from the
-// Pi over Server-Sent Events and does all decoding and display here.
+// Pi over Server-Sent Events and does all decoding and display here. The Pi
+// also sends per-day figures ("days"): the P1 meter readings at midnight, the
+// S0 pulses so far today (with every S0 line) and the last completed days.
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
 let config = null;
+let days = null;          // latest "days" message from the Pi
 
 // --- small display helpers ---------------------------------------------------
 
@@ -22,7 +25,7 @@ function setText(el, text) {
   }
 }
 
-// One table row per key, created on first use; returns its cells.
+// One table row per key, created on first use; returns its value cells.
 const rows = new Map();
 function row(table, key, label, cols) {
   let cells = rows.get(key);
@@ -46,12 +49,11 @@ function row(table, key, label, cols) {
 const fmt = (v, digits = 0) =>
   v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const clock = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const kwh = (pulses) => (pulses * config.s0.pulseWh) / 1000;
 
 // --- S0 pulse meters (RF12 node, decoded like HouseMon's pulseNode) -------------
 
-// Per channel: last counter value and when we saw it change.
-const s0state = {};
-const tileValues = { house: null, solar: null };
+const s0state = {};       // per channel: last counter value and when it changed
 
 function decodeS0(msg) {
   const cfg = config.s0;
@@ -62,7 +64,8 @@ function decodeS0(msg) {
 
   const now = Date.now();
   const wattPerMs = cfg.pulseWh * 3.6e6;   // W x ms for one pulse (0.5 Wh -> 1,800,000)
-  const sums = { house: 0, solar: 0 };
+  const sumNow = { house: 0, solar: 0 };
+  const sumToday = { house: 0, solar: 0 };
 
   for (const [ch, info] of Object.entries(cfg.channels)) {
     const i = 4 * (Number(ch) - 1);
@@ -82,16 +85,22 @@ function decodeS0(msg) {
     if (st.changed !== null && now - st.changed > t) watt = Math.min(watt, wattPerMs / (now - st.changed));
     if (count === 0) watt = 0;
 
-    const [pw, cnt, last] = row("s0", `s0-${ch}`, info.name, ["num", "num", "muted"]);
+    // Today: pulses counted by the Pi since midnight (it handles node restarts).
+    const today = msg.today && msg.today[ch] !== undefined ? kwh(msg.today[ch]) : null;
+
+    const [pw, td, last] = row("s0", `s0-${ch}`, info.name, ["num", "num", "muted"]);
     setText(pw, `${fmt(watt)} W`);
-    setText(cnt, `${fmt((count * cfg.pulseWh) / 1000, 3)} kWh`);
+    setText(td, today === null ? "–" : `${fmt(today, 3)} kWh`);
     last.textContent = st.changed ? clock(new Date(st.changed)) : "–";
-    if (info.kind) sums[info.kind] += watt;
+    if (info.kind) {
+      sumNow[info.kind] += watt;
+      if (today !== null) sumToday[info.kind] += today;
+    }
   }
 
   for (const kind of ["house", "solar"]) {
-    tileValues[kind] = sums[kind];
-    setText($(`#tile-${kind}`), fmt(sums[kind]));
+    setText($(`#now-${kind}`), fmt(sumNow[kind]));
+    setText($(`#today-${kind}`), fmt(sumToday[kind], 2));
   }
   sources.s0.last = Date.parse(msg.time);
 }
@@ -119,41 +128,53 @@ function parseTelegram(body) {
 }
 
 const num = (v) => parseFloat(v);                  // "00.512*kW" -> 0.512
-// DSMR time "251202174606W" -> "2025-12-02 17:46:06" (W = winter, S = summer)
+const watts = (v) => fmt(num(v[0]) * 1000);
+const count = (v) => String(parseInt(v[0], 10));
+// DSMR time "261102114311W" -> "2026-11-02 11:43:11" (W = winter, S = summer)
 const dsmrTime = (v) => `20${v.slice(0, 2)}-${v.slice(2, 4)}-${v.slice(4, 6)} ${v.slice(6, 8)}:${v.slice(8, 10)}:${v.slice(10, 12)}`;
 
-// What to show, in this order; rows only appear for fields the meter sends.
+// What to show where; rows only appear for fields the meter sends.
 const P1_ROWS = [
-  ["1-0:1.7.0", "Power taken from grid", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:2.7.0", "Power delivered to grid", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:21.7.0", "L1 taken", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:41.7.0", "L2 taken", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:61.7.0", "L3 taken", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:22.7.0", "L1 delivered", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:42.7.0", "L2 delivered", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:62.7.0", "L3 delivered", (v) => fmt(num(v[0]) * 1000), "W"],
-  ["1-0:32.7.0", "L1 voltage", (v) => fmt(num(v[0]), 1), "V"],
-  ["1-0:52.7.0", "L2 voltage", (v) => fmt(num(v[0]), 1), "V"],
-  ["1-0:72.7.0", "L3 voltage", (v) => fmt(num(v[0]), 1), "V"],
-  ["1-0:31.7.0", "L1 current", (v) => fmt(num(v[0])), "A"],
-  ["1-0:51.7.0", "L2 current", (v) => fmt(num(v[0])), "A"],
-  ["1-0:71.7.0", "L3 current", (v) => fmt(num(v[0])), "A"],
-  ["1-0:1.8.1", "Taken, tariff 1", (v) => fmt(num(v[0]), 3), "kWh"],
-  ["1-0:1.8.2", "Taken, tariff 2", (v) => fmt(num(v[0]), 3), "kWh"],
-  ["1-0:2.8.1", "Delivered, tariff 1", (v) => fmt(num(v[0]), 3), "kWh"],
-  ["1-0:2.8.2", "Delivered, tariff 2", (v) => fmt(num(v[0]), 3), "kWh"],
-  ["0-0:96.14.0", "Current tariff", (v) => String(parseInt(v[0], 10)), ""],
-  ["gas", "Gas", (v) => fmt(num(v[1]), 3), "m³"],
-  ["gas", "Gas reading time", (v) => dsmrTime(v[0]), ""],
-  ["0-0:1.0.0", "Meter clock", (v) => dsmrTime(v[0]), ""],
-  ["0-0:96.7.21", "Power failures", (v) => String(parseInt(v[0], 10)), ""],
-  ["0-0:96.7.9", "Long power failures", (v) => String(parseInt(v[0], 10)), ""],
-  ["1-0:32.32.0", "L1 voltage sags", (v) => String(parseInt(v[0], 10)), ""],
-  ["1-0:32.36.0", "L1 voltage swells", (v) => String(parseInt(v[0], 10)), ""],
-  ["1-3:0.2.8", "DSMR version", (v) => (v[0] / 10).toFixed(1), ""],
+  ["p1now", "1-0:1.7.0", "Power taken from grid", watts, "W"],
+  ["p1now", "1-0:2.7.0", "Power delivered to grid", watts, "W"],
+  ["p1now", "1-0:21.7.0", "L1 taken", watts, "W"],
+  ["p1now", "1-0:41.7.0", "L2 taken", watts, "W"],
+  ["p1now", "1-0:61.7.0", "L3 taken", watts, "W"],
+  ["p1now", "1-0:22.7.0", "L1 delivered", watts, "W"],
+  ["p1now", "1-0:42.7.0", "L2 delivered", watts, "W"],
+  ["p1now", "1-0:62.7.0", "L3 delivered", watts, "W"],
+  ["p1now", "1-0:32.7.0", "L1 voltage", (v) => fmt(num(v[0]), 1), "V"],
+  ["p1now", "1-0:52.7.0", "L2 voltage", (v) => fmt(num(v[0]), 1), "V"],
+  ["p1now", "1-0:72.7.0", "L3 voltage", (v) => fmt(num(v[0]), 1), "V"],
+  ["p1now", "1-0:31.7.0", "L1 current", (v) => fmt(num(v[0])), "A"],
+  ["p1now", "1-0:51.7.0", "L2 current", (v) => fmt(num(v[0])), "A"],
+  ["p1now", "1-0:71.7.0", "L3 current", (v) => fmt(num(v[0])), "A"],
+  ["p1now", "0-0:96.14.0", "Current tariff", count, ""],
+  ["p1totals", "1-0:1.8.1", "Taken, tariff 1", (v) => fmt(num(v[0]), 3), "kWh"],
+  ["p1totals", "1-0:1.8.2", "Taken, tariff 2", (v) => fmt(num(v[0]), 3), "kWh"],
+  ["p1totals", "1-0:2.8.1", "Delivered, tariff 1", (v) => fmt(num(v[0]), 3), "kWh"],
+  ["p1totals", "1-0:2.8.2", "Delivered, tariff 2", (v) => fmt(num(v[0]), 3), "kWh"],
+  ["p1totals", "gas", "Gas", (v) => fmt(num(v[1]), 3), "m³"],
+  ["p1totals", "gas", "Gas reading time", (v) => dsmrTime(v[0]), ""],
+  ["p1info", "0-0:1.0.0", "Meter clock", (v) => dsmrTime(v[0]), ""],
+  ["p1info", "0-0:96.7.21", "Power failures", count, ""],
+  ["p1info", "0-0:96.7.9", "Long power failures", count, ""],
+  ["p1info", "1-0:32.32.0", "L1 voltage sags", count, ""],
+  ["p1info", "1-0:32.36.0", "L1 voltage swells", count, ""],
+  ["p1info", "1-3:0.2.8", "DSMR version", (v) => (v[0] / 10).toFixed(1), ""],
 ];
 
 let p1Bad = 0;
+
+// Meter counters as numbers: taken (T1+T2), delivered (T1+T2), gas.
+function totals(r) {
+  const n = (x) => (Number.isFinite(x) ? x : 0);   // a counter the meter doesn't send counts as 0
+  return {
+    taken: n(r["1.8.1"]) + n(r["1.8.2"]),
+    delivered: n(r["2.8.1"]) + n(r["2.8.2"]),
+    gas: Number.isFinite(r.gas) ? r.gas : null,
+  };
+}
 
 function decodeP1(msg) {
   const tel = msg.telegram;
@@ -167,19 +188,97 @@ function decodeP1(msg) {
   const gasKey = Object.keys(f).find((k) => /^0-\d:24\.2\.1$/.test(k));
   if (gasKey) f.gas = f[gasKey];
 
-  for (const [key, label, show, unit] of P1_ROWS) {
+  for (const [table, key, label, show, unit] of P1_ROWS) {
     if (!f[key]) continue;
-    const [value, u] = row("p1", `p1-${label}`, label, ["num", "unit"]);
+    const [value, u] = row(table, `p1-${label}`, label, ["num", "unit"]);
     setText(value, show(f[key]));
     u.textContent = unit;
   }
 
   if (f["1-0:1.7.0"] && f["1-0:2.7.0"]) {
     const net = (num(f["1-0:1.7.0"][0]) - num(f["1-0:2.7.0"][0])) * 1000;
-    setText($("#tile-grid"), fmt(net));
-    $("#tile-grid-note").textContent = net < 0 ? "from P1 · delivering" : "from P1 · taking";
+    setText($("#now-grid"), fmt(net));
+    $("#now-grid-note").textContent = net < 0 ? "from P1 · delivering" : "from P1 · taking";
+  }
+
+  // Today = meter now minus the meter at midnight (sent by the Pi).
+  const first = days?.today?.p1First;
+  if (first) {
+    const now = totals({
+      "1.8.1": num(f["1-0:1.8.1"]?.[0]), "1.8.2": num(f["1-0:1.8.2"]?.[0]),
+      "2.8.1": num(f["1-0:2.8.1"]?.[0]), "2.8.2": num(f["1-0:2.8.2"]?.[0]),
+      gas: f.gas ? num(f.gas[1]) : undefined,
+    });
+    const start = totals(first);
+    const taken = now.taken - start.taken;
+    const delivered = now.delivered - start.delivered;
+    const todayRows = [["Taken from grid", fmt(taken, 3), "kWh"], ["Delivered to grid", fmt(delivered, 3), "kWh"],
+                       ["Net from grid", fmt(taken - delivered, 3), "kWh"]];
+    if (now.gas !== null && start.gas !== null) todayRows.push(["Gas", fmt(now.gas - start.gas, 3), "m³"]);
+    for (const [label, text, unit] of todayRows) {
+      const [value, u] = row("p1today", `p1today-${label}`, label, ["num", "unit"]);
+      setText(value, text);
+      u.textContent = unit;
+    }
+    setText($("#today-taken"), fmt(taken, 2));
+    setText($("#today-delivered"), fmt(delivered, 2));
+    if (now.gas !== null && start.gas !== null) setText($("#today-gas"), fmt(now.gas - start.gas, 2));
   }
   sources.p1.last = msg.seen * 1000;
+}
+
+// --- days: today's note and the last completed days ------------------------------
+
+const dayName = (iso) =>
+  new Date(`${iso}T12:00:00`).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+
+// kWh of the S0 channels of one kind ("house", "solar") from a day's pulses.
+function s0kind(pulses, kind) {
+  const node = pulses?.[String(config.s0.node)];
+  if (!node) return null;
+  let sum = 0;
+  for (const [ch, info] of Object.entries(config.s0.channels)) if (info.kind === kind) sum += kwh(node[ch] ?? 0);
+  return sum;
+}
+
+function onDays(msg) {
+  days = msg;
+  $("#today-date").textContent = `· ${dayName(msg.today.date)}`;
+  const partial = [];
+  if (msg.today.p1Partial) partial.push("P1");
+  if (msg.today.s0Partial) partial.push("S0");
+  $("#today-note").textContent = partial.length
+    ? `${partial.join(" and ")} logging started after midnight: today is incomplete.` : "";
+
+  // The history is fixed data: rebuild the table, no flashing.
+  const tbody = $("#hist tbody");
+  tbody.replaceChildren();
+  for (const d of msg.history) {
+    const p1 = d.p1.first && d.p1.last ? { a: totals(d.p1.first), b: totals(d.p1.last) } : null;
+    const cells = [
+      [p1 ? fmt(p1.b.taken - p1.a.taken, 2) : "–", d.p1.partial],
+      [p1 ? fmt(p1.b.delivered - p1.a.delivered, 2) : "–", d.p1.partial],
+      [s0kind(d.s0.pulses, "house"), d.s0.partial],
+      [s0kind(d.s0.pulses, "solar"), d.s0.partial],
+      [p1 && p1.a.gas !== null && p1.b.gas !== null ? fmt(p1.b.gas - p1.a.gas, 2) : "–", d.p1.partial],
+    ];
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = dayName(d.date);
+    tr.append(name);
+    for (let [value, part] of cells) {
+      if (typeof value === "number") value = fmt(value, 2);
+      if (value === null) value = "–";
+      const td = document.createElement("td");
+      td.className = "num" + (part && value !== "–" ? " partial" : "");
+      td.textContent = value;
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+  $("#hist-note").textContent = msg.history.length
+    ? "kWh per day (gas in m³). * = incomplete day: logging did not cover the whole day."
+    : "No completed days yet.";
 }
 
 // --- freshness and connection ------------------------------------------------------
@@ -208,6 +307,7 @@ function connect() {
   events.onerror = () => { status.textContent = "reconnecting…"; status.className = "status down"; };
   events.addEventListener("s0", (e) => decodeS0(JSON.parse(e.data)));
   events.addEventListener("p1", (e) => decodeP1(JSON.parse(e.data)));
+  events.addEventListener("days", (e) => onDays(JSON.parse(e.data)));
 }
 
 // A phone freezes background tabs and drops their connection; when the page

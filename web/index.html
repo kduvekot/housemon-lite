@@ -14,25 +14,53 @@
   </header>
 
   <main>
-    <section class="tiles">
-      <div class="tile"><h2>Grid</h2><p><span id="tile-grid" class="big">–</span> W</p><small id="tile-grid-note">from P1</small></div>
-      <div class="tile"><h2>House</h2><p><span id="tile-house" class="big">–</span> W</p><small>from S0</small></div>
-      <div class="tile"><h2>Solar</h2><p><span id="tile-solar" class="big">–</span> W</p><small>from S0</small></div>
+    <section class="band">
+      <h2 class="band-title">Now</h2>
+      <div class="tiles">
+        <div class="tile"><h3>Grid</h3><p><span id="now-grid" class="big">–</span> W</p><small id="now-grid-note">from P1</small></div>
+        <div class="tile"><h3>House</h3><p><span id="now-house" class="big">–</span> W</p><small>from S0</small></div>
+        <div class="tile"><h3>Solar</h3><p><span id="now-solar" class="big">–</span> W</p><small>from S0</small></div>
+      </div>
+    </section>
+
+    <section class="band">
+      <h2 class="band-title">Today <small id="today-date"></small></h2>
+      <div class="tiles five">
+        <div class="tile"><h3>Taken</h3><p><span id="today-taken" class="mid">–</span> kWh</p></div>
+        <div class="tile"><h3>Delivered</h3><p><span id="today-delivered" class="mid">–</span> kWh</p></div>
+        <div class="tile"><h3>House</h3><p><span id="today-house" class="mid">–</span> kWh</p></div>
+        <div class="tile"><h3>Solar</h3><p><span id="today-solar" class="mid">–</span> kWh</p></div>
+        <div class="tile"><h3>Gas</h3><p><span id="today-gas" class="mid">–</span> m³</p></div>
+      </div>
+      <p class="note" id="today-note"></p>
     </section>
 
     <section class="card">
       <h2 id="s0-title">S0 meters</h2>
       <p class="age" id="s0-age">waiting for data…</p>
-      <table id="s0"><thead><tr><th>Channel</th><th class="num">Power</th><th class="num">Counter</th><th title="when this page last saw the counter change">Last pulse seen</th></tr></thead><tbody></tbody></table>
+      <table id="s0"><thead><tr><th>Channel</th><th class="num">Now</th><th class="num">Today</th><th title="when this page last saw the counter change">Last pulse seen</th></tr></thead><tbody></tbody></table>
     </section>
 
     <section class="card">
       <h2 id="p1-title">Smart meter</h2>
       <p class="age" id="p1-age">waiting for data…</p>
-      <table id="p1"><thead><tr><th>Reading</th><th class="num">Value</th><th>Unit</th></tr></thead><tbody></tbody></table>
+      <h3>Now</h3>
+      <table id="p1now"><tbody></tbody></table>
+      <h3>Today</h3>
+      <table id="p1today"><tbody></tbody></table>
+      <h3>Meter readings</h3>
+      <table id="p1totals"><tbody></tbody></table>
+      <h3>Meter info</h3>
+      <table id="p1info"><tbody></tbody></table>
+    </section>
+
+    <section class="card wide">
+      <h2>Last days</h2>
+      <p class="age" id="hist-note">loading…</p>
+      <table id="hist"><thead><tr><th>Day</th><th class="num">Taken</th><th class="num">Delivered</th><th class="num">House</th><th class="num">Solar</th><th class="num">Gas</th></tr></thead><tbody></tbody></table>
     </section>
   </main>
 
-  <footer>Values light up briefly when they change. Raw data stays on the Pi; this page decodes it.</footer>
+  <footer>Values light up briefly when they change. Days run from midnight to midnight, Dutch time. Raw data stays on the Pi; this page decodes it.</footer>
 </body>
 </html>

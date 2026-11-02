@@ -7,11 +7,13 @@ The server does as little as possible, so it runs comfortably on a Pi 1:
   * every second it checks whether the raw log files written by
     jeenode-listener (S0 over RF12) and p1-logger (P1 telegrams) have grown;
   * it keeps the newest S0 line per RF12 node and the newest complete P1
-    telegram, unchanged;
-  * it pushes those to the browsers over Server-Sent Events (/events).
+    telegram, unchanged, and pushes them to the browsers over Server-Sent
+    Events (/events);
+  * per local day (daystats.py) it keeps the P1 meter readings at midnight,
+    the S0 pulses so far, and the figures of the last 7 completed days.
 
-Decoding, the P1 CRC check and the display all happen in the browser
-(web/app.js). Only the Python standard library is used.
+Decoding, the P1 CRC check of live telegrams and the display all happen in
+the browser (web/app.js). Only the Python standard library is used.
 """
 
 import argparse
@@ -21,16 +23,21 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import daystats
 
 POLL_INTERVAL = 1.0     # seconds between checks of the log files
 BACKLOG = 4096          # bytes read back from a file at start-up
 KEEPALIVE = 15.0        # seconds between SSE keep-alive comments
+HISTORY_DAYS = 7        # completed days shown
 
 DEFAULT_S0_DIR = "/var/lib/housemon/logger"   # YYYY/YYYYMMDD.txt (UTC)
 DEFAULT_P1_DIR = "/var/lib/p1-logger/data"    # YYYY/YYYYMMDD/HH.txt (UTC)
+DEFAULT_TZ = "Europe/Amsterdam"
 
 S0_LINE = re.compile(r"^L (\S+) \S+ (OK (\d+)(?: \d+)*)\s*$")
 P1_TELEGRAM = re.compile(rb"/[^!]*![0-9A-Fa-f]{4}\r?\n")
@@ -116,11 +123,103 @@ class Hub:
             return newer()
 
 
-def poll_loop(hub, s0, p1):
+# ---------------------------------------------------------------------------
+# Today and the last days (local days; see daystats.py)
+# ---------------------------------------------------------------------------
+
+class DayStore:
+    def __init__(self, hub, tz, s0dir, p1dir):
+        self.hub, self.tz, self.s0dir, self.p1dir = hub, tz, s0dir, p1dir
+        self.lock = threading.Lock()
+        self.history = []           # completed days, newest first
+        self.start_today(daystats.local_today(tz), daystats.S0Totals())
+
+    def start_today(self, day, s0):
+        self.today = day
+        self.start, self.end = daystats.day_bounds(day, self.tz)
+        self.s0 = s0
+        self.p1_first = None
+        self.p1_first_hour = None
+
+    def load_today(self):
+        """At start-up: S0 pulses since midnight, and the P1 midnight reading."""
+        now = datetime.now(timezone.utc)
+        daystats.s0_scan(self.s0dir, self.start, now, self.s0)
+        self.p1_first, self.p1_first_hour = daystats.p1_first(self.p1dir, self.start, now + timedelta(hours=1))
+        self.publish()
+
+    def load_history(self):
+        """Background thread at start-up: the last completed days, newest first."""
+        for back in range(1, HISTORY_DAYS + 1):
+            day = self.today - timedelta(days=back)
+            summary = daystats.summarize_day(day, self.tz, self.s0dir, self.p1dir)
+            with self.lock:
+                self.history.append(summary)
+        log.info("history ready: %s .. %s", self.history[-1]["date"], self.history[0]["date"])
+        self.publish()
+
+    def on_s0(self, parsed):
+        """Every new S0 line from the live log."""
+        if self.s0.last is None or parsed[0] > self.s0.last:     # skip lines counted at start-up
+            self.s0.add(*parsed)
+
+    def on_p1(self, telegram):
+        """Every new P1 telegram: only needed until today's first reading is known."""
+        if self.p1_first is None:
+            self.p1_first = daystats.p1_readings(telegram)
+            self.p1_first_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+            if self.p1_first:
+                self.publish()
+
+    def check_midnight(self):
+        day = daystats.local_today(self.tz)
+        if day == self.today:
+            return
+        last, last_hour = daystats.p1_last(self.p1dir, self.start, self.end)
+        done = {
+            "date": self.today.isoformat(),
+            "p1": {"first": self.p1_first, "last": last,
+                   "partial": self.p1_first is None or self.p1_first_hour != self.start
+                              or last_hour != self.end - timedelta(hours=1)},
+            "s0": {"pulses": self.s0.as_json(),
+                   "partial": self.s0.first is None
+                              or (self.s0.first - self.start).total_seconds() > daystats.EDGE
+                              or (self.end - self.s0.last).total_seconds() > daystats.EDGE},
+        }
+        with self.lock:
+            self.history = ([done] + self.history)[:HISTORY_DAYS]
+        # the new day continues from the last counters, so no pulse is lost
+        s0 = daystats.S0Totals()
+        s0.prev = dict(self.s0.prev)
+        self.start_today(day, s0)
+        log.info("new day %s", day)
+        self.publish()
+
+    def today_pulses(self, node):
+        return {str(c): p for c, p in self.s0.pulses.get(node, {}).items()}
+
+    def publish(self):
+        with self.lock:
+            history = list(self.history)
+        self.hub.publish("days", {
+            "tz": str(self.tz),
+            "today": {"date": self.today.isoformat(), "p1First": self.p1_first,
+                      "p1Partial": self.p1_first_hour != self.start,
+                      "s0Partial": self.s0.first is None
+                                   or (self.s0.first - self.start).total_seconds() > daystats.EDGE},
+            "history": history,
+        })
+
+
+def poll_loop(hub, s0, p1, days):
+    days.load_today()
+    threading.Thread(target=days.load_history, daemon=True).start()
     s0_buf = ""
     p1_buf = b""
     while True:
-        # S0: complete lines; keep the newest one per RF12 node
+        days.check_midnight()
+
+        # S0: complete lines; count them all, show the newest one per node
         s0_buf += s0.poll().decode("ascii", "replace")
         *lines, s0_buf = s0_buf.split("\n")
         newest = {}
@@ -128,15 +227,20 @@ def poll_loop(hub, s0, p1):
             m = S0_LINE.match(line)
             if m:
                 newest[int(m.group(3)) & 0x1F] = {"time": m.group(1), "line": m.group(2)}
+                parsed = daystats.parse_s0(line)
+                if parsed:
+                    days.on_s0(parsed)
         for node, payload in newest.items():
+            payload["today"] = days.today_pulses(node)
             hub.publish(f"s0-{node}", payload)
 
-        # P1: complete telegrams (/ ... !CRC); keep the newest one
+        # P1: complete telegrams (/ ... !CRC); show the newest one
         p1_buf += p1.poll()
         found = list(P1_TELEGRAM.finditer(p1_buf))
         if found:
-            hub.publish("p1", {"seen": time.time(),
-                               "telegram": found[-1].group(0).decode("ascii", "replace")})
+            newest_tel = found[-1].group(0)
+            days.on_p1(newest_tel)
+            hub.publish("p1", {"seen": time.time(), "telegram": newest_tel.decode("ascii", "replace")})
             p1_buf = p1_buf[found[-1].end():]
         if len(p1_buf) > 65536:          # never let garbage grow without bound
             p1_buf = p1_buf[-8192:]
@@ -193,6 +297,7 @@ def main(argv=None):
     p.add_argument("--port", type=int, default=3333, help="TCP port (default: 3333)")
     p.add_argument("--s0-dir", default=DEFAULT_S0_DIR, help=f"jeenode-listener logs (default: {DEFAULT_S0_DIR})")
     p.add_argument("--p1-dir", default=DEFAULT_P1_DIR, help=f"p1-logger data (default: {DEFAULT_P1_DIR})")
+    p.add_argument("--tz", default=DEFAULT_TZ, help=f"time zone of the day boundary (default: {DEFAULT_TZ})")
     p.add_argument("--web-dir", default=str(Path(__file__).resolve().parent / "web"), help="static files")
     p.add_argument("--debug", action="store_true", help="log every request")
     args = p.parse_args(argv)
@@ -201,15 +306,17 @@ def main(argv=None):
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     hub = Hub()
+    days = DayStore(hub, ZoneInfo(args.tz), Path(args.s0_dir), Path(args.p1_dir))
     s0 = Follower(s0_path(Path(args.s0_dir)))
     p1 = Follower(p1_path(Path(args.p1_dir)))
-    threading.Thread(target=poll_loop, args=(hub, s0, p1), daemon=True).start()
+    threading.Thread(target=poll_loop, args=(hub, s0, p1, days), daemon=True).start()
 
     Handler.hub = hub
     server = ThreadingHTTPServer((args.bind, args.port),
                                  functools.partial(Handler, directory=args.web_dir))
     server.daemon_threads = True
-    log.info("serving %s on %s:%d (S0 %s, P1 %s)", args.web_dir, args.bind, args.port, args.s0_dir, args.p1_dir)
+    log.info("serving %s on %s:%d (S0 %s, P1 %s, days in %s)",
+             args.web_dir, args.bind, args.port, args.s0_dir, args.p1_dir, args.tz)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
