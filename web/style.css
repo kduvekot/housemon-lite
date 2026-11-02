@@ -44,14 +44,22 @@ h2 { margin: 0; font-size: 1em; font-weight: 600; }
 .status.live::before { color: var(--ok); }
 .status.down::before { color: var(--warn); }
 
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 16px 0; }
-.tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+/* three tiles side by side, also on a phone; the numbers shrink with the screen */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 16px 0; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .tile h2 { color: var(--muted); font-weight: 500; }
-.tile p { margin: .2em 0; font-size: 1.1em; }
-.tile small { color: var(--muted); }
-.big { font-size: 2em; font-weight: 650; font-variant-numeric: tabular-nums; border-radius: 4px; padding: 0 .1em; }
+.tile p { margin: .2em 0; font-size: 1.1em; white-space: nowrap; }
+.tile small { color: var(--muted); font-size: .75em; }
+.big { font-size: clamp(1.4em, 6vw, 2em); font-weight: 650; font-variant-numeric: tabular-nums; border-radius: 4px; padding: 0 .1em; }
 
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; overflow-x: auto; }
+
+/* wide screens: the S0 and P1 cards side by side, the tiles across the top */
+@media (min-width: 900px) {
+  header, main, footer { max-width: 1280px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; align-items: start; }
+  .tiles { grid-column: 1 / -1; }
+}
 .age { margin: .2em 0 .6em; color: var(--muted); font-size: .85em; }
 .age.stale { color: var(--warn); }
 

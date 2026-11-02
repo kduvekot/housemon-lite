@@ -199,13 +199,25 @@ function updateAges() {
   }
 }
 
+let events = null;
+
 function connect() {
   const status = $("#status");
-  const events = new EventSource("events");      // reconnects by itself
+  events = new EventSource("events");            // reconnects by itself
   events.onopen = () => { status.textContent = "live"; status.className = "status live"; };
   events.onerror = () => { status.textContent = "reconnecting…"; status.className = "status down"; };
   events.addEventListener("s0", (e) => decodeS0(JSON.parse(e.data)));
   events.addEventListener("p1", (e) => decodeP1(JSON.parse(e.data)));
+}
+
+// A phone freezes background tabs and drops their connection; when the page
+// is shown again, reconnect at once instead of waiting for the browser's retry.
+// The server sends the latest values on every new connection.
+function onVisible() {
+  if (document.visibilityState === "visible" && events && events.readyState !== EventSource.OPEN) {
+    events.close();
+    connect();
+  }
 }
 
 async function start() {
@@ -213,6 +225,7 @@ async function start() {
   $("#s0-title").textContent = config.s0.location;
   $("#p1-title").textContent = config.p1.location;
   connect();
+  document.addEventListener("visibilitychange", onVisible);
   setInterval(updateAges, 1000);
 }
 
