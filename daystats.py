@@ -112,6 +112,26 @@ def p1_last(p1dir, start, end):
 
 # --- S0 -----------------------------------------------------------------------
 
+RESTART_MAX = 100   # pulses: after a node restart its counters start again near 0
+
+
+def is_stale(prev, counts):
+    """True if `counts` is an older packet than `prev`, judged on the data alone.
+
+    Counters only go up, except when the node restarts (they start again at 0)
+    or a counter wraps at 65536. A counter that went down but not to near 0,
+    and not by a wrap, means this packet is older than the last one counted:
+    e.g. a second receiver's copy that sorts in the wrong place because its
+    clock differs slightly. Such a packet adds nothing and is skipped.
+    """
+    for old, new in zip(prev, counts):
+        wrapped = old > WRAP - 5000 and new < 5000
+        restarted = new <= RESTART_MAX and old - new >= RESTART_MAX
+        if new < old and not wrapped and not restarted:
+            return True
+    return False
+
+
 class S0Totals:
     """Adds up S0 pulses per node and channel, across counter resets and wraps.
 
@@ -133,6 +153,8 @@ class S0Totals:
     def add(self, when, node, values):
         counts = [values[2 * i] | values[2 * i + 1] << 8 for i in range(0, 16, 2)]
         prev = self.prev.get(node)
+        if prev and is_stale(prev, counts):
+            return          # an older packet (e.g. from a second receiver): already counted
         tot = self.pulses.setdefault(node, {ch: 0 for ch in range(1, 9)})
         delta = {}
         if prev:
