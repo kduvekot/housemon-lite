@@ -261,6 +261,7 @@ def poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf):
         for node, payload in newest.items():
             payload["today"] = today["pulses"].get(str(node), {})
             payload["todayGrid"] = today["grid"]
+            payload["lastPulse"] = hours.last_pulse(node)
             hub.publish(f"s0-{node}", payload)
 
     # P1: complete telegrams (/ ... !CRC); show the newest one

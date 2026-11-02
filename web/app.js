@@ -50,6 +50,15 @@ const fmt = (v, digits = 0) =>
   v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const clock = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const kwh = (pulses) => (pulses * config.s0.pulseWh) / 1000;
+// "14:03:12" today, "yesterday 22:10", or "Sat 31 Oct 08:15" for older
+function pulseTime(ms, now) {
+  const d = new Date(ms), today = new Date(now);
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (day(d) === day(today)) return clock(d);
+  if (day(today) - day(d) === 86400000) return `yesterday ${hm}`;
+  return `${d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${hm}`;
+}
 
 // --- S0 pulse meters (RF12 node, decoded like HouseMon's pulseNode) -------------
 
@@ -79,10 +88,15 @@ function decodeS0(msg) {
       st.changed = now;
     }
 
+    // When this channel last pulsed: from the Pi (it counts every packet, also
+    // before this page was opened); else what this page itself saw.
+    const lastIso = msg.lastPulse?.[ch];
+    const lastPulse = lastIso ? Date.parse(`${lastIso}Z`) : st.changed;
+
     // Power from the pulse interval. When no new pulse has come for longer than
     // that interval, the real power must be lower: use the time since then.
     let watt = t > 0 ? wattPerMs / t : 0;
-    if (st.changed !== null && now - st.changed > t) watt = Math.min(watt, wattPerMs / (now - st.changed));
+    if (lastPulse !== null && now - lastPulse > t) watt = Math.min(watt, wattPerMs / (now - lastPulse));
     if (count === 0) watt = 0;
 
     // Today: pulses counted by the Pi since midnight (it handles node restarts).
@@ -91,7 +105,7 @@ function decodeS0(msg) {
     const [pw, td, last] = row("s0", `s0-${ch}`, info.name, ["num", "num", "muted"]);
     setText(pw, `${fmt(watt)} W`);
     setText(td, today === null ? "–" : `${fmt(today, 3)} kWh`);
-    last.textContent = st.changed ? clock(new Date(st.changed)) : "–";
+    last.textContent = lastPulse ? pulseTime(lastPulse, now) : "more than 36 h ago";
     if (info.kind) {
       sumNow[info.kind] += watt;
       if (today !== null) sumToday[info.kind] += today;
