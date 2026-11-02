@@ -154,7 +154,7 @@ class S0Totals:
         counts = [values[2 * i] | values[2 * i + 1] << 8 for i in range(0, 16, 2)]
         prev = self.prev.get(node)
         if prev and is_stale(prev, counts):
-            return          # an older packet (e.g. from a second receiver): already counted
+            return None     # an older packet (e.g. from a second receiver): already counted
         tot = self.pulses.setdefault(node, {ch: 0 for ch in range(1, 9)})
         delta = {}
         if prev:
@@ -176,6 +176,7 @@ class S0Totals:
             elif (when - self.step_start).total_seconds() >= GRID_INTERVAL:
                 self.close_step()
                 self.step_start = when
+        return delta        # pulses added per channel by this packet ({} for the first one)
 
     def close_step(self):
         if self.step_net > 0:

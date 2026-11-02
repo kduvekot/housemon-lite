@@ -6,7 +6,8 @@ meters over RF12) and [p1-logger](https://github.com/kduvekot/p1-logger)
 (P1 smart-meter telegrams) collect. Made to run on a Raspberry Pi 1.
 
 Current readings (W) updated live, today so far (kWh, from midnight Dutch
-time) and the last 7 days; a value lights up briefly when it changes, as in
+time), the last 7 days, and a graph of the last 36 hours (house, solar and
+grid per minute); a value lights up briefly when it changes, as in
 the original HouseMon. No graphs or admin yet.
 
 ## How it works
@@ -33,6 +34,10 @@ loggers ──> raw log files ──> housemon_lite.py ──SSE──> browser 
 - **Grid without P1**: for days without P1 data the grid figures are
   estimated from S0, house minus solar per 30 s (positive = in, negative =
   out), and marked with ≈. Checked against a real P1 meter: within 1.5 %.
+- **Graph** (`series.py`, `graph.html`): per minute the house and solar pulses
+  and the average P1 grid power, kept per UTC hour; completed hours are
+  cached like the days. `/api/series?hours=36` returns the per-minute averages
+  in W; the page draws them as SVG (no library) and refreshes every minute.
 - **Extra S0 data** (optional): S0 log files in the same layout in
   `/var/lib/housemon-lite-backfill/s0` (or `--s0-extra-dir`) are merged with
   the logger's, e.g. to fill the last days from another receiver. Read only
@@ -63,7 +68,7 @@ the RF12 node id are in `web/config.json`.
 
 ```sh
 sudo install -d /opt/housemon-lite/web
-sudo install -m 0644 housemon_lite.py daystats.py /opt/housemon-lite/
+sudo install -m 0644 housemon_lite.py daystats.py series.py /opt/housemon-lite/
 sudo install -m 0644 web/* /opt/housemon-lite/web/
 sudo install -m 0644 housemon-lite.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -83,7 +88,9 @@ time zone of the day boundary).
 |---|---|
 | `housemon_lite.py` | the server |
 | `daystats.py` | per-day figures (midnight readings, S0 pulse totals) |
+| `series.py` | per-minute figures for the graph |
 | `web/index.html`, `web/style.css` | the page (light and dark theme) |
 | `web/app.js` | decoding and display |
+| `web/graph.html`, `web/graph.js` | the graph |
 | `web/config.json` | channel names and settings |
 | `housemon-lite.service` | systemd unit |

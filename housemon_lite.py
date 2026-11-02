@@ -27,14 +27,17 @@ import time
 from datetime import datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 import daystats
+import series
 
 POLL_INTERVAL = 1.0     # seconds between checks of the log files
 BACKLOG = 4096          # bytes read back from a file at start-up
 KEEPALIVE = 15.0        # seconds between SSE keep-alive comments
 HISTORY_DAYS = 7        # completed days shown
+GRAPH_HOURS = 36        # hours of per-minute data kept ready for the graph
 
 DEFAULT_S0_DIR = "/var/lib/housemon/logger"   # YYYY/YYYYMMDD.txt (UTC)
 DEFAULT_P1_DIR = "/var/lib/p1-logger/data"    # YYYY/YYYYMMDD/HH.txt (UTC)
@@ -222,42 +225,57 @@ class DayStore:
         })
 
 
-def poll_loop(hub, s0, p1, days):
+def poll_loop(hub, s0, p1, days, hours):
     days.load_today()
     threading.Thread(target=days.load_history, daemon=True).start()
+    now = series.hour_of(datetime.now(timezone.utc))
+    built = hours.load(now - timedelta(hours=GRAPH_HOURS - 1), now)
+    log.info("graph data ready (%d hours built from the logs, the rest from the cache)", built)
     s0_buf = ""
     p1_buf = b""
     while True:
-        days.check_midnight()
-
-        # S0: complete lines; count them all, show the newest one per node
-        s0_buf += s0.poll().decode("ascii", "replace")
-        *lines, s0_buf = s0_buf.split("\n")
-        newest = {}
-        for line in lines:
-            m = S0_LINE.match(line)
-            if m:
-                newest[int(m.group(3)) & 0x1F] = {"time": m.group(1), "line": m.group(2)}
-                parsed = daystats.parse_s0(line)
-                if parsed:
-                    days.on_s0(parsed)
-        for node, payload in newest.items():
-            payload["today"] = days.today_pulses(node)
-            payload["todayGrid"] = days.today_grid()
-            hub.publish(f"s0-{node}", payload)
-
-        # P1: complete telegrams (/ ... !CRC); show the newest one
-        p1_buf += p1.poll()
-        found = list(P1_TELEGRAM.finditer(p1_buf))
-        if found:
-            newest_tel = found[-1].group(0)
-            days.on_p1(newest_tel)
-            hub.publish("p1", {"seen": time.time(), "telegram": newest_tel.decode("ascii", "replace")})
-            p1_buf = p1_buf[found[-1].end():]
-        if len(p1_buf) > 65536:          # never let garbage grow without bound
-            p1_buf = p1_buf[-8192:]
-
+        try:
+            s0_buf, p1_buf = poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf)
+        except Exception:           # log and go on: the live data must keep flowing
+            log.exception("error while reading the logs; continuing")
         time.sleep(POLL_INTERVAL)
+
+
+def poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf):
+    """One round: read what the loggers added, update the figures, publish."""
+    days.check_midnight()
+
+    # S0: complete lines; count them all, show the newest one per node
+    s0_buf += s0.poll().decode("ascii", "replace")
+    *lines, s0_buf = s0_buf.split("\n")
+    newest = {}
+    for line in lines:
+        m = S0_LINE.match(line)
+        if m:
+            newest[int(m.group(3)) & 0x1F] = {"time": m.group(1), "line": m.group(2)}
+            parsed = daystats.parse_s0(line)
+            if parsed:
+                days.on_s0(parsed)
+                hours.on_s0(parsed)
+    for node, payload in newest.items():
+        payload["today"] = days.today_pulses(node)
+        payload["todayGrid"] = days.today_grid()
+        hub.publish(f"s0-{node}", payload)
+
+    # P1: complete telegrams (/ ... !CRC); show the newest one
+    p1_buf += p1.poll()
+    found = list(P1_TELEGRAM.finditer(p1_buf))
+    if found:
+        seen = datetime.now(timezone.utc)
+        for m in found:
+            hours.on_p1(m.group(0), seen)
+        newest_tel = found[-1].group(0)
+        days.on_p1(newest_tel)
+        hub.publish("p1", {"seen": time.time(), "telegram": newest_tel.decode("ascii", "replace")})
+        p1_buf = p1_buf[found[-1].end():]
+    if len(p1_buf) > 65536:          # never let garbage grow without bound
+        p1_buf = p1_buf[-8192:]
+    return s0_buf, p1_buf
 
 
 # ---------------------------------------------------------------------------
@@ -266,19 +284,32 @@ def poll_loop(hub, s0, p1, days):
 
 class Handler(SimpleHTTPRequestHandler):
     hub = None
+    hours = None
+    pulse_wh = 0.5
 
     def do_GET(self):
         if self.path == "/events":
             self.send_events()
+        elif self.path.startswith("/api/series"):
+            query = parse_qs(urlsplit(self.path).query)
+            try:
+                n = max(1, min(168, int(query.get("hours", ["36"])[0])))
+            except ValueError:
+                n = 36
+            self.send_json(self.hours.series(n, self.pulse_wh))
         elif self.path == "/api/latest":
-            body = json.dumps({k: v for k, (_, v) in self.hub.items.items()}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_json({k: v for k, (_, v) in self.hub.items.items()})
         else:
             super().do_GET()
+
+    def send_json(self, data):
+        body = json.dumps(data, separators=(",", ":")).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_events(self):
         self.send_response(200)
@@ -335,11 +366,14 @@ def main(argv=None):
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
     days = DayStore(hub, ZoneInfo(args.tz), s0dirs, Path(args.p1_dir), grid, cache_dir)
+    hours = series.HourStore(s0dirs, Path(args.p1_dir), grid, Path(args.state_dir) if args.state_dir else None)
     s0 = Follower(s0_path(Path(args.s0_dir)))
     p1 = Follower(p1_path(Path(args.p1_dir)))
-    threading.Thread(target=poll_loop, args=(hub, s0, p1, days), daemon=True).start()
+    threading.Thread(target=poll_loop, args=(hub, s0, p1, days, hours), daemon=True).start()
 
     Handler.hub = hub
+    Handler.hours = hours
+    Handler.pulse_wh = cfg.get("pulseWh", 0.5)
     server = ThreadingHTTPServer((args.bind, args.port),
                                  functools.partial(Handler, directory=args.web_dir))
     server.daemon_threads = True

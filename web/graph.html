@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>housemon-lite · graph</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="graph.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>housemon<span>-lite</span></h1>
+    <a class="back" href="./">← now</a>
+  </header>
+
+  <main class="graph-page">
+    <div class="bar">
+      <div class="seg" id="series">
+        <button data-s="house">House</button><button data-s="solar">Solar</button><button data-s="grid">Grid</button>
+      </div>
+      <div class="seg" id="range">
+        <button data-h="6">6 h</button><button data-h="36">36 h</button>
+      </div>
+    </div>
+    <div class="card"><svg id="chart" viewBox="0 0 1000 380" preserveAspectRatio="none"></svg><div class="legend" id="legend"></div></div>
+    <div class="stats" id="stats"></div>
+    <p class="note" id="note">loading…</p>
+  </main>
+</body>
+</html>
