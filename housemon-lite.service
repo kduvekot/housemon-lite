@@ -1,0 +1,41 @@
+[Unit]
+Description=housemon-lite: live view of S0 and P1 data
+Documentation=https://github.com/kduvekot/housemon-lite
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -B /opt/housemon-lite/housemon_lite.py --port 3333
+Restart=on-failure
+RestartSec=5s
+
+# Runs as a throw-away user that may read (not write) any file: the loggers'
+# directories are private to their own users (mode 700), and this avoids
+# changing their permissions. Nothing else is allowed.
+DynamicUser=yes
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+
+# --- Hardening ---------------------------------------------------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
