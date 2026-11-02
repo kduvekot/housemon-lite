@@ -97,6 +97,10 @@ function decodeS0(msg) {
     // that interval, the real power must be lower: use the time since then.
     let watt = t > 0 ? wattPerMs / t : 0;
     if (lastPulse !== null && now - lastPulse > t) watt = Math.min(watt, wattPerMs / (now - lastPulse));
+    // At that power the next pulse was due after t. If it has not come after
+    // stopFactor x t, assume the power stopped (e.g. solar at sunset, a device
+    // switched off). An assumption, not a measurement: the next pulse corrects it.
+    if (lastPulse !== null && t > 0 && now - lastPulse > (cfg.stopFactor ?? 3) * t) watt = 0;
     if (count === 0) watt = 0;
 
     // Today: pulses counted by the Pi since midnight (it handles node restarts).

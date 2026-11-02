@@ -3,6 +3,7 @@
     "node": 9,
     "location": "S0 meters",
     "pulseWh": 0.5,
+    "stopFactor": 3,
     "channels": {
       "2": { "name": "Huis",     "kind": "house" },
       "3": { "name": "Zon 2",    "kind": "solar" },
