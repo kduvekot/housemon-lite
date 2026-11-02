@@ -2,9 +2,11 @@
 // from /api/series. Drawn as plain SVG; refreshed once a minute.
 //
 // Zoom = a wider chart: at zoom 4 the chart is 4x as wide as the card, so a
-// quarter of the 36 hours fits on the screen; the card scrolls sideways
-// (swipe on a phone). The W axis is a separate SVG on the left, so it stays
-// in place while scrolling. The figures below the chart cover what is visible.
+// quarter of the 36 hours fits on the screen. The strip below the chart shows
+// all 36 h with a window for what is on screen; dragging it moves the chart,
+// so a drag in the chart itself stays free for reading values. The W axis is
+// a separate SVG on the left, so it stays in place. The figures below the
+// chart cover what is on screen.
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -140,6 +142,49 @@ function draw() {
     : `<span><i style="background:${css(COLORS[k])}"></i>${NAMES[k]}</span>`).join("");
   for (const b of document.querySelectorAll("#series button")) b.classList.toggle("on", state.show[b.dataset.s]);
   $("#zoom-label").textContent = `${36 / state.zoom} h`;
+  drawNav();
+  updateStats();
+}
+
+// The strip below the chart: all 36 h in miniature, with a window for the
+// part on screen. Dragging or tapping it moves the chart.
+function drawNav() {
+  const nav = $("#nav");
+  const w = nav.clientWidth, h = 44, { n, keys } = geo;
+  nav.replaceChildren();
+  nav.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  let lo = 0, hi = 1;
+  for (const k of keys) for (let i = 0; i < n; i += 5) {
+    const v = value(k, i);
+    if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  }
+  const nx = (i) => (i / Math.max(1, n - 1)) * w, ny = (v) => 3 + ((hi - v) / (hi - lo)) * (h - 6);
+  for (const k of keys) {                         // every 5th minute is detailed enough here
+    let d = "", pen = false;
+    for (let i = 0; i < n; i += 5) {
+      const v = value(k, i);
+      if (v == null) { pen = false; continue; }
+      d += `${pen ? "L" : "M"}${nx(i).toFixed(1)},${ny(v).toFixed(1)}`;
+      pen = true;
+    }
+    if (d) svgEl("path", { d, fill: "none", stroke: css(k === "grid" ? "--in" : COLORS[k]), "stroke-width": 1, opacity: 0.7 }, nav);
+  }
+  geo.window = svgEl("rect", { class: "window", y: 1, height: h - 2, rx: 3 }, nav);
+  geo.navWidth = w;
+  placeWindow();
+}
+
+function placeWindow() {
+  const left = $("#scroll").scrollLeft;
+  geo.window.setAttribute("x", (left / geo.width) * geo.navWidth);
+  geo.window.setAttribute("width", Math.max(6, (geo.view / geo.width) * geo.navWidth));
+}
+
+// Move the chart so the window is centred on strip position `px`.
+function scrollToNav(px) {
+  const scroll = $("#scroll");
+  scroll.scrollLeft = (px / geo.navWidth) * geo.width - geo.view / 2;
+  placeWindow();
   updateStats();
 }
 
@@ -186,6 +231,7 @@ function setZoom(zoom, atEnd) {
   state.zoom = zoom;
   draw();
   scroll.scrollLeft = atEnd ? geo.width : center * geo.width - geo.view / 2;
+  placeWindow();
   updateStats();
 }
 
@@ -203,10 +249,12 @@ async function load() {
     data = fresh;
     draw();
     scroll.scrollLeft = atEnd ? geo.width : left;
+    placeWindow();
     updateStats();
     $("#note").textContent = `Per-minute averages, updated every minute (last: ${fmtTime(Date.now())}). ` +
       "Grid above 0 = taken from the grid, below 0 = delivered; dashed = estimated from S0 where there is no P1 data. " +
-      "Zoom with − and +, swipe or scroll sideways to move; the figures below cover what is on screen.";
+      "Zoom with − and +; drag the strip below the chart to move; drag in the chart to read values. " +
+      "The figures below cover what is on screen.";
   } catch (e) {
     $("#note").textContent = "Could not load the data; trying again in a minute.";
   }
@@ -232,8 +280,27 @@ let pending = false;
 $("#scroll").addEventListener("scroll", () => {          // stats follow the scrolling, once per frame
   if (pending || !geo) return;
   pending = true;
-  requestAnimationFrame(() => { pending = false; updateStats(); });
+  requestAnimationFrame(() => { pending = false; placeWindow(); updateStats(); });
 });
+// the strip: drag or tap to move through the 36 hours
+let dragging = false;
+const navX = (ev) => ev.clientX - $("#nav").getBoundingClientRect().left;
+$("#nav").addEventListener("pointerdown", (ev) => {
+  if (!geo) return;
+  dragging = true;
+  $("#nav").setPointerCapture(ev.pointerId);
+  scrollToNav(navX(ev));
+});
+$("#nav").addEventListener("pointermove", (ev) => { if (dragging) scrollToNav(navX(ev)); });
+$("#nav").addEventListener("pointerup", () => { dragging = false; });
+$("#nav").addEventListener("pointercancel", () => { dragging = false; });
+// a trackpad's sideways scroll, or Shift + mouse wheel, over the chart moves it too
+$("#scroll").addEventListener("wheel", (ev) => {
+  const dx = ev.shiftKey ? ev.deltaY : ev.deltaX;
+  if (!dx || Math.abs(ev.deltaX) < Math.abs(ev.deltaY) && !ev.shiftKey) return;
+  ev.preventDefault();
+  $("#scroll").scrollLeft += dx;
+}, { passive: false });
 window.addEventListener("resize", () => data && setZoom(state.zoom));
 matchMedia("(prefers-color-scheme: dark)").onchange = () => data && setZoom(state.zoom);
 load();
