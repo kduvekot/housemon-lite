@@ -1,13 +1,18 @@
 """
-Per-minute figures for the graph: house and solar from S0, grid from P1
-(estimated from S0, house minus solar, where there is no P1).
+Per-hour records: the basis for both the graph and "today".
 
-Kept per UTC hour as 60 minutes of [house pulses, solar pulses, sum of P1 net
-watts, number of P1 telegrams]. The current hour is filled live by the
-server; a completed hour is stored once as a small JSON file
-(cache/hours/YYYYMMDDHH.json). Hours that are missing (e.g. after the
-service was down) are built from the log files: S0 in one pass over the
-range, P1 one hourly file at a time.
+Per UTC hour:
+  minutes   60 x [house pulses, solar pulses, sum of P1 net watts, P1 telegrams]
+            (for the graph);
+  channels  S0 pulses per node and channel in that hour (for "today");
+  gridIn, gridOut   the S0 grid estimate (house minus solar per 30 s) in pulses;
+  first, last       time of the first and last S0 line in that hour.
+
+The current hour is filled live. A completed hour is stored once as a small
+JSON file (cache/hours/YYYYMMDDHH.json); at start-up only hours that are not
+in the cache (normally just the current one) are built from the log files.
+Dutch midnight is always on a whole UTC hour, so "today" is simply the sum of
+today's hours.
 """
 
 import json
@@ -21,6 +26,7 @@ log = logging.getLogger("housemon-lite")
 
 P1_NET = re.compile(rb"1-0:1\.7\.0\((\d+\.\d+)\*kW\).*?1-0:2\.7\.0\((\d+\.\d+)\*kW\)", re.S)
 SETTLE = timedelta(minutes=10)   # an hour is final this long after it ended
+FORMAT = 2                        # cache layout; older files are rebuilt
 
 
 def hour_of(when):
@@ -28,7 +34,8 @@ def hour_of(when):
 
 
 def empty_hour():
-    return [[0, 0, 0.0, 0] for _ in range(60)]     # house, solar, P1 W-sum, P1 count
+    return {"minutes": [[0, 0, 0.0, 0] for _ in range(60)],   # house, solar, P1 W-sum, P1 count
+            "channels": {}, "gridIn": 0, "gridOut": 0, "first": None, "last": None}
 
 
 def p1_net(telegram):
@@ -37,15 +44,19 @@ def p1_net(telegram):
     return None if m is None else 1000 * (float(m.group(1)) - float(m.group(2)))
 
 
+def iso(when):
+    return when.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 class HourStore:
     def __init__(self, s0dirs, p1dir, grid, cache_dir):
         self.s0dirs, self.p1dir, self.grid = s0dirs, p1dir, grid
         self.cache_dir = cache_dir / "hours" if cache_dir else None
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.hours = {}         # UTC hour (datetime) -> 60 minutes
+        self.hours = {}         # UTC hour (datetime) -> record (see empty_hour)
         self.live = None        # the hour being filled live
-        self.s0 = daystats.S0Totals()   # live S0 counters (for the pulses per line)
+        self.s0 = daystats.S0Totals(grid)   # live S0 counters
         self.s0_until = None    # S0 lines up to here are already in the hours
 
     # --- building hours from the logs -----------------------------------------
@@ -67,9 +78,12 @@ class HourStore:
 
     def _build(self, first, last, wanted):
         built = {h: empty_hour() for h in wanted}
-        # S0: one pass from a few minutes before `first` (to know the counters)
-        totals = daystats.S0Totals()
+        # S0: one pass from a few minutes before `first` (to know the counters).
+        # Lines before that are skipped on their timestamp text alone, which is
+        # much cheaper than parsing them.
+        totals = daystats.S0Totals(self.grid)
         start, end = first - timedelta(minutes=5), last + timedelta(hours=1)
+        start_text = iso(start)
         day = start.date()
         while day <= end.date():
             lines = []
@@ -77,7 +91,12 @@ class HourStore:
                 path = d / day.strftime("%Y") / (day.strftime("%Y%m%d") + ".txt")
                 try:
                     with open(path, encoding="ascii", errors="replace") as f:
-                        lines += [p for p in map(daystats.parse_s0, f) if p and start <= p[0] < end]
+                        for line in f:
+                            if line[2:21] < start_text:
+                                continue
+                            p = daystats.parse_s0(line)
+                            if p and start <= p[0] < end:
+                                lines.append(p)
                 except OSError:
                     pass
             lines.sort(key=lambda p: p[0])
@@ -87,8 +106,8 @@ class HourStore:
         # the live part continues from these counters, after the last line counted
         self.s0 = totals
         self.s0_until = totals.last
-        # P1: telegrams come once a second; a file that holds fewer than 3600
-        # started late, so its telegrams are placed at the end of the hour
+        # P1: telegrams come once a second; a finished file that holds fewer
+        # than 3600 started late, so its telegrams are placed at the end
         for hour in wanted:
             try:
                 data = daystats.p1_file(self.p1dir, hour).read_bytes()
@@ -100,25 +119,35 @@ class HourStore:
             for k, tel in enumerate(tels):
                 net = p1_net(tel)
                 if net is not None:
-                    m = built[hour][min(59, (offset + k) // 60)]
+                    m = built[hour]["minutes"][min(59, (offset + k) // 60)]
                     m[2] += net
                     m[3] += 1
         now = datetime.now(timezone.utc)
-        for hour, minutes in built.items():
-            self.hours[hour] = minutes
+        for hour, rec in built.items():
+            self.hours[hour] = rec
             if now >= hour + timedelta(hours=1) + SETTLE:
-                self._write_cache(hour, minutes)
+                self._write_cache(hour, rec)
 
     def _add_s0(self, hours, totals, when, node, values):
+        grid_before = (totals.grid_in, totals.grid_out)
         delta = totals.add(when, node, values)
-        if not delta or node != self.grid["node"]:
-            return
-        minutes = hours.get(hour_of(when))
-        if minutes is None:
-            return
-        m = minutes[when.minute]
-        m[0] += sum(delta[c] for c in self.grid["house"])
-        m[1] += sum(delta[c] for c in self.grid["solar"])
+        rec = hours.get(hour_of(when))
+        if delta is None or rec is None:
+            return                  # stale packet, or an hour we do not keep
+        stamp = iso(when)
+        rec["first"] = rec["first"] or stamp
+        rec["last"] = stamp
+        if not delta:
+            return                  # first packet: nothing to add yet
+        ch = rec["channels"].setdefault(str(node), [0] * 8)
+        for c, n in delta.items():
+            ch[c - 1] += n
+        rec["gridIn"] += totals.grid_in - grid_before[0]
+        rec["gridOut"] += totals.grid_out - grid_before[1]
+        if node == self.grid["node"]:
+            m = rec["minutes"][when.minute]
+            m[0] += sum(delta[c] for c in self.grid["house"])
+            m[1] += sum(delta[c] for c in self.grid["solar"])
 
     # --- live --------------------------------------------------------------------
 
@@ -132,9 +161,9 @@ class HourStore:
     def on_p1(self, telegram, when):
         self._roll(when)
         net = p1_net(telegram)
-        minutes = self.hours.get(hour_of(when))
-        if net is not None and minutes is not None:
-            m = minutes[when.minute]
+        rec = self.hours.get(hour_of(when))
+        if net is not None and rec is not None:
+            m = rec["minutes"][when.minute]
             m[2] += net
             m[3] += 1
 
@@ -157,20 +186,51 @@ class HourStore:
             return None
         try:
             c = json.loads((self.cache_dir / f"{hour:%Y%m%d%H}.json").read_text())
-            return c["minutes"] if c.get("grid") == self.grid else None
+            if c.get("format") == FORMAT and c.get("grid") == self.grid:
+                return c["hour"]
         except (OSError, ValueError, KeyError):
-            return None
+            pass
+        return None
 
-    def _write_cache(self, hour, minutes):
+    def _write_cache(self, hour, rec):
         if not self.cache_dir:
             return
         path = self.cache_dir / f"{hour:%Y%m%d%H}.json"
         tmp = path.with_suffix(".tmp")
         try:
-            tmp.write_text(json.dumps({"grid": self.grid, "minutes": minutes}))
+            tmp.write_text(json.dumps({"format": FORMAT, "grid": self.grid, "hour": rec}))
             tmp.replace(path)
         except OSError as e:        # a cache problem must never stop the live data
             log.warning("cannot cache hour %s: %s", f"{hour:%Y%m%d%H}", e)
+
+    # --- sums over a range of hours (e.g. today) -------------------------------------
+
+    def summary(self, start, end):
+        """S0 pulses per node/channel, grid estimate and first/last S0 time
+        for the hours start <= hour < end (UTC hour boundaries)."""
+        channels, grid_in, grid_out, first, last = {}, 0, 0, None, None
+        hour = start
+        while hour < end:
+            rec = self.hours.get(hour)
+            if rec:
+                for node, ch in rec["channels"].items():
+                    tot = channels.setdefault(node, [0] * 8)
+                    for i, n in enumerate(ch):
+                        tot[i] += n
+                grid_in += rec["gridIn"]
+                grid_out += rec["gridOut"]
+                first = first or rec["first"]
+                last = rec["last"] or last
+            hour += timedelta(hours=1)
+        if start <= hour_of(datetime.now(timezone.utc)) < end:   # include the open 30 s step
+            net = self.s0.step_net
+            grid_in += max(net, 0)
+            grid_out += max(-net, 0)
+        return {
+            "pulses": {n: {str(i + 1): p for i, p in enumerate(ch)} for n, ch in channels.items()},
+            "grid": {"in": grid_in, "out": grid_out},
+            "first": first, "last": last,
+        }
 
     # --- for the page --------------------------------------------------------------
 
@@ -182,12 +242,12 @@ class HourStore:
         out = {"start": start.isoformat(), "step": 60, "house": [], "solar": [], "grid": [], "gridEstimate": []}
         hour = start
         while hour <= now:
-            minutes = self.hours.get(hour)
+            rec = self.hours.get(hour)
             for i in range(60):
                 t = hour + timedelta(minutes=i)
                 if t + timedelta(minutes=1) > now:
                     break           # the running minute is not complete yet
-                m = minutes[i] if minutes else None
+                m = rec["minutes"][i] if rec else None
                 # the house never uses nothing for a whole minute: no pulses = no S0 data
                 has_s0 = m is not None and (m[0] or m[1])
                 house = round(m[0] * per_min) if has_s0 else None

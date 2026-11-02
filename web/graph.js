@@ -151,6 +151,10 @@ function draw() {
 async function load() {
   try {
     data = await (await fetch(`api/series?hours=36`, { cache: "no-store" })).json();
+    if (!data.house.some((v) => v != null) && !data.grid.some((v) => v != null)) {
+      $("#note").textContent = "The Pi is starting up and loading its figures; the graph follows within a few minutes.";
+      return;
+    }
     $("#note").textContent = `Per-minute averages, updated every minute (last: ${fmtTime(Date.now())}). ` +
       "Grid above 0 = taken from the grid, below 0 = delivered; dashed = estimated from S0 where there is no P1 data.";
     draw();

@@ -113,9 +113,10 @@ def p1_last(p1dir, start, end):
 # --- S0 -----------------------------------------------------------------------
 
 RESTART_MAX = 100   # pulses: after a node restart its counters start again near 0
+SILENCE = 30        # seconds without packets after which a drop means a restart
 
 
-def is_stale(prev, counts):
+def is_stale(prev, counts, silence=0.0):
     """True if `counts` is an older packet than `prev`, judged on the data alone.
 
     Counters only go up, except when the node restarts (they start again at 0)
@@ -124,10 +125,18 @@ def is_stale(prev, counts):
     e.g. a second receiver's copy that sorts in the wrong place because its
     clock differs slightly. Such a packet adds nothing and is skipped.
     """
+    # The node restarts as a whole: all its counters start again at 0. One
+    # counter that clearly did so (a big drop to near 0) marks the packet as a
+    # restart, also for channels whose counters were still small. So does a
+    # drop after a long silence: the node sends every few seconds, so it was
+    # off; a stale copy from a second receiver comes within seconds.
+    if silence > SILENCE:
+        return False
+    if any(new <= RESTART_MAX and old - new >= RESTART_MAX for old, new in zip(prev, counts)):
+        return False
     for old, new in zip(prev, counts):
         wrapped = old > WRAP - 5000 and new < 5000
-        restarted = new <= RESTART_MAX and old - new >= RESTART_MAX
-        if new < old and not wrapped and not restarted:
+        if new < old and not wrapped:
             return True
     return False
 
@@ -142,6 +151,7 @@ class S0Totals:
     def __init__(self, grid=None):
         self.grid = grid
         self.prev = {}      # node -> list of 8 counters
+        self.prev_time = {} # node -> time of the last packet counted
         self.pulses = {}    # node -> {channel: pulses}
         self.first = None   # time of the first and last line counted
         self.last = None
@@ -153,7 +163,8 @@ class S0Totals:
     def add(self, when, node, values):
         counts = [values[2 * i] | values[2 * i + 1] << 8 for i in range(0, 16, 2)]
         prev = self.prev.get(node)
-        if prev and is_stale(prev, counts):
+        silence = (when - self.prev_time[node]).total_seconds() if node in self.prev_time else 0.0
+        if prev and is_stale(prev, counts, silence):
             return None     # an older packet (e.g. from a second receiver): already counted
         tot = self.pulses.setdefault(node, {ch: 0 for ch in range(1, 9)})
         delta = {}
@@ -167,6 +178,7 @@ class S0Totals:
                     delta[ch] = new                 # node restarted: counts from 0
                 tot[ch] += delta[ch]
         self.prev[node] = counts
+        self.prev_time[node] = when
         self.first = self.first or when
         self.last = when
         if self.grid and node == self.grid["node"] and delta:

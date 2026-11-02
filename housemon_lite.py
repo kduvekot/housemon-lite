@@ -135,24 +135,27 @@ class Hub:
 # ---------------------------------------------------------------------------
 
 class DayStore:
-    def __init__(self, hub, tz, s0dirs, p1dir, grid, cache_dir):
+    """Today and the last completed days. Today's S0 figures come from the hour
+    records (series.py): Dutch midnight is on a whole UTC hour, so today is the
+    sum of today's hours. The P1 figures need only the meter reading at midnight."""
+
+    def __init__(self, hub, tz, s0dirs, p1dir, grid, cache_dir, hours):
         self.hub, self.tz, self.s0dirs, self.p1dir, self.grid = hub, tz, s0dirs, p1dir, grid
         self.cache_dir = cache_dir      # completed days as small JSON files (None: no cache)
+        self.hours = hours
         self.lock = threading.Lock()
         self.history = []           # completed days, newest first
-        self.start_today(daystats.local_today(tz), daystats.S0Totals(grid))
+        self.start_today(daystats.local_today(tz))
 
-    def start_today(self, day, s0):
+    def start_today(self, day):
         self.today = day
         self.start, self.end = daystats.day_bounds(day, self.tz)
-        self.s0 = s0
         self.p1_first = None
         self.p1_first_hour = None
 
     def load_today(self):
-        """At start-up: S0 pulses since midnight, and the P1 midnight reading."""
+        """At start-up: the P1 meter reading at midnight (the S0 figures are in the hours)."""
         now = datetime.now(timezone.utc)
-        daystats.s0_scan(self.s0dirs, self.start, now, self.s0)
         self.p1_first, self.p1_first_hour = daystats.p1_first(self.p1dir, self.start, now + timedelta(hours=1))
         self.publish()
 
@@ -167,11 +170,6 @@ class DayStore:
         log.info("history ready: %s .. %s", self.history[-1]["date"], self.history[0]["date"])
         self.publish()
 
-    def on_s0(self, parsed):
-        """Every new S0 line from the live log."""
-        if self.s0.last is None or parsed[0] > self.s0.last:     # skip lines counted at start-up
-            self.s0.add(*parsed)
-
     def on_p1(self, telegram):
         """Every new P1 telegram: only needed until today's first reading is known."""
         if self.p1_first is None:
@@ -180,18 +178,29 @@ class DayStore:
             if self.p1_first:
                 self.publish()
 
+    def s0_today(self):
+        """Today's S0 figures from the hour records, with the 'incomplete' flag."""
+        s = self.hours.summary(self.start, self.end)
+        first = datetime.fromisoformat(s["first"]).replace(tzinfo=timezone.utc) if s["first"] else None
+        s["partial"] = first is None or (first - self.start).total_seconds() > daystats.EDGE
+        return s
+
     def check_midnight(self):
         day = daystats.local_today(self.tz)
         if day == self.today:
             return
         last, last_hour = daystats.p1_last(self.p1dir, self.start, self.end)
+        s0 = self.hours.summary(self.start, self.end)
+        first = datetime.fromisoformat(s0["first"]).replace(tzinfo=timezone.utc) if s0["first"] else None
+        lastline = datetime.fromisoformat(s0["last"]).replace(tzinfo=timezone.utc) if s0["last"] else None
         done = {
             "date": self.today.isoformat(),
             "p1": {"first": self.p1_first, "last": last,
                    "partial": self.p1_first is None or self.p1_first_hour != self.start
                               or last_hour != self.end - timedelta(hours=1)},
-            "s0": {"pulses": self.s0.as_json(), "grid": self.s0.grid_json(),
-                   "partial": daystats.s0_partial(self.s0, self.start, self.end)},
+            "s0": {"pulses": s0["pulses"], "grid": s0["grid"],
+                   "partial": first is None or (first - self.start).total_seconds() > daystats.EDGE
+                              or (self.end - lastline).total_seconds() > daystats.EDGE},
         }
         with self.lock:
             self.history = ([done] + self.history)[:HISTORY_DAYS]
@@ -199,18 +208,9 @@ class DayStore:
             daystats.save_day(done, self.grid, self.cache_dir)
         except OSError as e:
             log.warning("cannot cache %s: %s", done["date"], e)
-        # the new day continues from the last counters, so no pulse is lost
-        s0 = daystats.S0Totals(self.grid)
-        s0.prev = dict(self.s0.prev)
-        self.start_today(day, s0)
+        self.start_today(day)
         log.info("new day %s", day)
         self.publish()
-
-    def today_pulses(self, node):
-        return {str(c): p for c, p in self.s0.pulses.get(node, {}).items()}
-
-    def today_grid(self):
-        return self.s0.grid_json()
 
     def publish(self):
         with self.lock:
@@ -219,18 +219,18 @@ class DayStore:
             "tz": str(self.tz),
             "today": {"date": self.today.isoformat(), "p1First": self.p1_first,
                       "p1Partial": self.p1_first_hour != self.start,
-                      "s0Partial": self.s0.first is None
-                                   or (self.s0.first - self.start).total_seconds() > daystats.EDGE},
+                      "s0Partial": self.s0_today()["partial"]},
             "history": history,
         })
 
 
 def poll_loop(hub, s0, p1, days, hours):
-    days.load_today()
-    threading.Thread(target=days.load_history, daemon=True).start()
+    # the hours first: today's S0 figures are made from them
     now = series.hour_of(datetime.now(timezone.utc))
     built = hours.load(now - timedelta(hours=GRAPH_HOURS - 1), now)
-    log.info("graph data ready (%d hours built from the logs, the rest from the cache)", built)
+    log.info("hours ready (%d built from the logs, the rest from the cache)", built)
+    days.load_today()
+    threading.Thread(target=days.load_history, daemon=True).start()
     s0_buf = ""
     p1_buf = b""
     while True:
@@ -255,12 +255,13 @@ def poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf):
             newest[int(m.group(3)) & 0x1F] = {"time": m.group(1), "line": m.group(2)}
             parsed = daystats.parse_s0(line)
             if parsed:
-                days.on_s0(parsed)
                 hours.on_s0(parsed)
-    for node, payload in newest.items():
-        payload["today"] = days.today_pulses(node)
-        payload["todayGrid"] = days.today_grid()
-        hub.publish(f"s0-{node}", payload)
+    if newest:
+        today = days.s0_today()
+        for node, payload in newest.items():
+            payload["today"] = today["pulses"].get(str(node), {})
+            payload["todayGrid"] = today["grid"]
+            hub.publish(f"s0-{node}", payload)
 
     # P1: complete telegrams (/ ... !CRC); show the newest one
     p1_buf += p1.poll()
@@ -373,8 +374,8 @@ def main(argv=None):
     cache_dir = Path(args.state_dir) / "days" if args.state_dir else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    days = DayStore(hub, ZoneInfo(args.tz), s0dirs, Path(args.p1_dir), grid, cache_dir)
     hours = series.HourStore(s0dirs, Path(args.p1_dir), grid, Path(args.state_dir) if args.state_dir else None)
+    days = DayStore(hub, ZoneInfo(args.tz), s0dirs, Path(args.p1_dir), grid, cache_dir, hours)
     s0 = Follower(s0_path(Path(args.s0_dir)))
     p1 = Follower(p1_path(Path(args.p1_dir)))
     threading.Thread(target=poll_loop, args=(hub, s0, p1, days, hours), daemon=True).start()

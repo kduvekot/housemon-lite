@@ -318,7 +318,10 @@ let events = null;
 function connect() {
   const status = $("#status");
   events = new EventSource("events");            // reconnects by itself
-  events.onopen = () => { status.textContent = "live"; status.className = "status live"; };
+  // "live" only once data arrives; right after a restart the Pi first loads its figures
+  events.onopen = () => { status.textContent = "connected, waiting for data…"; status.className = "status"; };
+  const live = () => { if (status.textContent !== "live") { status.textContent = "live"; status.className = "status live"; } };
+  for (const kind of ["s0", "p1"]) events.addEventListener(kind, live);
   events.onerror = () => { status.textContent = "reconnecting…"; status.className = "status down"; };
   events.addEventListener("s0", (e) => decodeS0(JSON.parse(e.data)));
   events.addEventListener("p1", (e) => decodeP1(JSON.parse(e.data)));
