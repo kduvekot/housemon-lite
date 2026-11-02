@@ -13,6 +13,8 @@ RestartSec=5s
 # directories are private to their own users (mode 700), and this avoids
 # changing their permissions. Nothing else is allowed.
 DynamicUser=yes
+# Completed days are cached here as small JSON files ($STATE_DIRECTORY).
+StateDirectory=housemon-lite
 AmbientCapabilities=CAP_DAC_READ_SEARCH
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH
 

@@ -20,6 +20,7 @@ import argparse
 import functools
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -38,6 +39,9 @@ HISTORY_DAYS = 7        # completed days shown
 DEFAULT_S0_DIR = "/var/lib/housemon/logger"   # YYYY/YYYYMMDD.txt (UTC)
 DEFAULT_P1_DIR = "/var/lib/p1-logger/data"    # YYYY/YYYYMMDD/HH.txt (UTC)
 DEFAULT_TZ = "Europe/Amsterdam"
+# Optional extra S0 data in the same layout (e.g. a temporary backfill from
+# another receiver); read only if the directory exists.
+DEFAULT_S0_EXTRA = "/var/lib/housemon-lite-backfill/s0"
 
 S0_LINE = re.compile(r"^L (\S+) \S+ (OK (\d+)(?: \d+)*)\s*$")
 P1_TELEGRAM = re.compile(rb"/[^!]*![0-9A-Fa-f]{4}\r?\n")
@@ -128,11 +132,12 @@ class Hub:
 # ---------------------------------------------------------------------------
 
 class DayStore:
-    def __init__(self, hub, tz, s0dir, p1dir):
-        self.hub, self.tz, self.s0dir, self.p1dir = hub, tz, s0dir, p1dir
+    def __init__(self, hub, tz, s0dirs, p1dir, grid, cache_dir):
+        self.hub, self.tz, self.s0dirs, self.p1dir, self.grid = hub, tz, s0dirs, p1dir, grid
+        self.cache_dir = cache_dir      # completed days as small JSON files (None: no cache)
         self.lock = threading.Lock()
         self.history = []           # completed days, newest first
-        self.start_today(daystats.local_today(tz), daystats.S0Totals())
+        self.start_today(daystats.local_today(tz), daystats.S0Totals(grid))
 
     def start_today(self, day, s0):
         self.today = day
@@ -144,15 +149,16 @@ class DayStore:
     def load_today(self):
         """At start-up: S0 pulses since midnight, and the P1 midnight reading."""
         now = datetime.now(timezone.utc)
-        daystats.s0_scan(self.s0dir, self.start, now, self.s0)
+        daystats.s0_scan(self.s0dirs, self.start, now, self.s0)
         self.p1_first, self.p1_first_hour = daystats.p1_first(self.p1dir, self.start, now + timedelta(hours=1))
         self.publish()
 
     def load_history(self):
-        """Background thread at start-up: the last completed days, newest first."""
+        """Background thread at start-up: the last completed days, newest first.
+        Days already in the cache are only read; the others are computed once."""
         for back in range(1, HISTORY_DAYS + 1):
             day = self.today - timedelta(days=back)
-            summary = daystats.summarize_day(day, self.tz, self.s0dir, self.p1dir)
+            summary = daystats.cached_day(day, self.tz, self.s0dirs, self.p1dir, self.grid, self.cache_dir)
             with self.lock:
                 self.history.append(summary)
         log.info("history ready: %s .. %s", self.history[-1]["date"], self.history[0]["date"])
@@ -181,15 +187,17 @@ class DayStore:
             "p1": {"first": self.p1_first, "last": last,
                    "partial": self.p1_first is None or self.p1_first_hour != self.start
                               or last_hour != self.end - timedelta(hours=1)},
-            "s0": {"pulses": self.s0.as_json(),
-                   "partial": self.s0.first is None
-                              or (self.s0.first - self.start).total_seconds() > daystats.EDGE
-                              or (self.end - self.s0.last).total_seconds() > daystats.EDGE},
+            "s0": {"pulses": self.s0.as_json(), "grid": self.s0.grid_json(),
+                   "partial": daystats.s0_partial(self.s0, self.start, self.end)},
         }
         with self.lock:
             self.history = ([done] + self.history)[:HISTORY_DAYS]
+        try:
+            daystats.save_day(done, self.grid, self.cache_dir)
+        except OSError as e:
+            log.warning("cannot cache %s: %s", done["date"], e)
         # the new day continues from the last counters, so no pulse is lost
-        s0 = daystats.S0Totals()
+        s0 = daystats.S0Totals(self.grid)
         s0.prev = dict(self.s0.prev)
         self.start_today(day, s0)
         log.info("new day %s", day)
@@ -197,6 +205,9 @@ class DayStore:
 
     def today_pulses(self, node):
         return {str(c): p for c, p in self.s0.pulses.get(node, {}).items()}
+
+    def today_grid(self):
+        return self.s0.grid_json()
 
     def publish(self):
         with self.lock:
@@ -232,6 +243,7 @@ def poll_loop(hub, s0, p1, days):
                     days.on_s0(parsed)
         for node, payload in newest.items():
             payload["today"] = days.today_pulses(node)
+            payload["todayGrid"] = days.today_grid()
             hub.publish(f"s0-{node}", payload)
 
         # P1: complete telegrams (/ ... !CRC); show the newest one
@@ -298,6 +310,10 @@ def main(argv=None):
     p.add_argument("--s0-dir", default=DEFAULT_S0_DIR, help=f"jeenode-listener logs (default: {DEFAULT_S0_DIR})")
     p.add_argument("--p1-dir", default=DEFAULT_P1_DIR, help=f"p1-logger data (default: {DEFAULT_P1_DIR})")
     p.add_argument("--tz", default=DEFAULT_TZ, help=f"time zone of the day boundary (default: {DEFAULT_TZ})")
+    p.add_argument("--s0-extra-dir", action="append", default=None,
+                   help=f"extra S0 data, same layout; repeatable (default: {DEFAULT_S0_EXTRA} if it exists)")
+    p.add_argument("--state-dir", default=os.environ.get("STATE_DIRECTORY"),
+                   help="where completed days are cached (default: $STATE_DIRECTORY from systemd; none: no cache)")
     p.add_argument("--web-dir", default=str(Path(__file__).resolve().parent / "web"), help="static files")
     p.add_argument("--debug", action="store_true", help="log every request")
     args = p.parse_args(argv)
@@ -305,8 +321,20 @@ def main(argv=None):
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    # Which S0 channels are house and solar, for the grid estimate of days
+    # without P1 data; the page's own config.json says so.
+    cfg = json.loads((Path(args.web_dir) / "config.json").read_text())["s0"]
+    grid = {"node": cfg["node"],
+            "house": [int(c) for c, i in cfg["channels"].items() if i.get("kind") == "house"],
+            "solar": [int(c) for c, i in cfg["channels"].items() if i.get("kind") == "solar"]}
+    extra = args.s0_extra_dir if args.s0_extra_dir is not None else [DEFAULT_S0_EXTRA]
+    s0dirs = [Path(args.s0_dir)] + [Path(d) for d in extra if Path(d).is_dir()]
+
     hub = Hub()
-    days = DayStore(hub, ZoneInfo(args.tz), Path(args.s0_dir), Path(args.p1_dir))
+    cache_dir = Path(args.state_dir) / "days" if args.state_dir else None
+    if cache_dir:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    days = DayStore(hub, ZoneInfo(args.tz), s0dirs, Path(args.p1_dir), grid, cache_dir)
     s0 = Follower(s0_path(Path(args.s0_dir)))
     p1 = Follower(p1_path(Path(args.p1_dir)))
     threading.Thread(target=poll_loop, args=(hub, s0, p1, days), daemon=True).start()
@@ -315,8 +343,8 @@ def main(argv=None):
     server = ThreadingHTTPServer((args.bind, args.port),
                                  functools.partial(Handler, directory=args.web_dir))
     server.daemon_threads = True
-    log.info("serving %s on %s:%d (S0 %s, P1 %s, days in %s)",
-             args.web_dir, args.bind, args.port, args.s0_dir, args.p1_dir, args.tz)
+    log.info("serving %s on %s:%d (S0 %s, P1 %s, days in %s, cache %s)",
+             args.web_dir, args.bind, args.port, " + ".join(map(str, s0dirs)), args.p1_dir, args.tz, cache_dir)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -102,6 +102,13 @@ function decodeS0(msg) {
     setText($(`#now-${kind}`), fmt(sumNow[kind]));
     setText($(`#today-${kind}`), fmt(sumToday[kind], 2));
   }
+  // Grid in/out today: from P1 when it covers the whole day, else estimated
+  // from S0 (house minus solar per 30 s, worked out by the Pi).
+  if (msg.todayGrid && !p1CoversToday()) {
+    setText($("#today-in"), `≈ ${fmt(kwh(msg.todayGrid.in), 2)}`);
+    setText($("#today-out"), `≈ ${fmt(kwh(msg.todayGrid.out), 2)}`);
+    $("#today-in-note").textContent = $("#today-out-note").textContent = "estimated from S0";
+  }
   sources.s0.last = Date.parse(msg.time);
 }
 
@@ -220,14 +227,19 @@ function decodeP1(msg) {
       setText(value, text);
       u.textContent = unit;
     }
-    setText($("#today-taken"), fmt(taken, 2));
-    setText($("#today-delivered"), fmt(delivered, 2));
+    if (p1CoversToday()) {
+      setText($("#today-in"), fmt(taken, 2));
+      setText($("#today-out"), fmt(delivered, 2));
+      $("#today-in-note").textContent = $("#today-out-note").textContent = "from P1";
+    }
     if (now.gas !== null && start.gas !== null) setText($("#today-gas"), fmt(now.gas - start.gas, 2));
   }
   sources.p1.last = msg.seen * 1000;
 }
 
 // --- days: today's note and the last completed days ------------------------------
+
+const p1CoversToday = () => Boolean(days?.today?.p1First) && !days.today.p1Partial;
 
 const dayName = (iso) =>
   new Date(`${iso}T12:00:00`).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
@@ -255,11 +267,14 @@ function onDays(msg) {
   tbody.replaceChildren();
   for (const d of msg.history) {
     const p1 = d.p1.first && d.p1.last ? { a: totals(d.p1.first), b: totals(d.p1.last) } : null;
+    // Grid in/out: from P1 when it covers the day; else estimated from S0 (≈).
+    const useP1 = p1 && !d.p1.partial;
+    const est = (v) => (d.s0.grid ? `≈ ${fmt(kwh(d.s0.grid[v]), 2)}` : "–");
     const cells = [
-      [p1 ? fmt(p1.b.taken - p1.a.taken, 2) : "–", d.p1.partial],
-      [p1 ? fmt(p1.b.delivered - p1.a.delivered, 2) : "–", d.p1.partial],
       [s0kind(d.s0.pulses, "house"), d.s0.partial],
       [s0kind(d.s0.pulses, "solar"), d.s0.partial],
+      useP1 ? [fmt(p1.b.taken - p1.a.taken, 2), false] : [est("in"), d.s0.partial],
+      useP1 ? [fmt(p1.b.delivered - p1.a.delivered, 2), false] : [est("out"), d.s0.partial],
       [p1 && p1.a.gas !== null && p1.b.gas !== null ? fmt(p1.b.gas - p1.a.gas, 2) : "–", d.p1.partial],
     ];
     const tr = document.createElement("tr");
@@ -277,7 +292,7 @@ function onDays(msg) {
     tbody.append(tr);
   }
   $("#hist-note").textContent = msg.history.length
-    ? "kWh per day (gas in m³). * = incomplete day: logging did not cover the whole day."
+    ? "kWh per day (gas in m³). ≈ = estimated from S0 (no P1 data for that day). * = incomplete day: logging did not cover the whole day."
     : "No completed days yet.";
 }
 

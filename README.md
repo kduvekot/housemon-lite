@@ -26,8 +26,18 @@ loggers ──> raw log files ──> housemon_lite.py ──SSE──> browser 
   for P1 only the meter reading at midnight and before the next midnight are
   needed (the first or last few KB of one hourly file); S0 pulses are added up
   line by line, across node restarts and counter wraps. Today is counted as
-  the lines come in; a completed day is computed once and kept in memory.
-  Days the logging did not cover completely are marked.
+  the lines come in. A completed day is computed once and cached as a small
+  JSON file in the service's state directory (`/var/lib/housemon-lite`); it
+  is only computed again if its source files change. Days the logging did
+  not cover completely are marked.
+- **Grid without P1**: for days without P1 data the grid figures are
+  estimated from S0, house minus solar per 30 s (positive = in, negative =
+  out), and marked with ≈. Checked against a real P1 meter: within 1.5 %.
+- **Extra S0 data** (optional): S0 log files in the same layout in
+  `/var/lib/housemon-lite-backfill/s0` (or `--s0-extra-dir`) are merged with
+  the logger's, e.g. to fill the last days from another receiver. Read only
+  if the directory exists; it can simply be removed once those days have
+  left the 7-day table.
 - **The browser does the work**: decoding the S0 packets, parsing the P1
   telegram including its CRC check (damaged telegrams are skipped), and the
   display. Plain JavaScript and CSS, no framework, no build step.

@@ -17,19 +17,19 @@
     <section class="band">
       <h2 class="band-title">Now</h2>
       <div class="tiles">
-        <div class="tile"><h3>Grid</h3><p><span id="now-grid" class="big">–</span> W</p><small id="now-grid-note">from P1</small></div>
         <div class="tile"><h3>House</h3><p><span id="now-house" class="big">–</span> W</p><small>from S0</small></div>
         <div class="tile"><h3>Solar</h3><p><span id="now-solar" class="big">–</span> W</p><small>from S0</small></div>
+        <div class="tile"><h3>Grid</h3><p><span id="now-grid" class="big">–</span> W</p><small id="now-grid-note">from P1</small></div>
       </div>
     </section>
 
     <section class="band">
       <h2 class="band-title">Today <small id="today-date"></small></h2>
       <div class="tiles five">
-        <div class="tile"><h3>Taken</h3><p><span id="today-taken" class="mid">–</span> kWh</p></div>
-        <div class="tile"><h3>Delivered</h3><p><span id="today-delivered" class="mid">–</span> kWh</p></div>
         <div class="tile"><h3>House</h3><p><span id="today-house" class="mid">–</span> kWh</p></div>
         <div class="tile"><h3>Solar</h3><p><span id="today-solar" class="mid">–</span> kWh</p></div>
+        <div class="tile"><h3>Grid in</h3><p><span id="today-in" class="mid">–</span> kWh</p><small id="today-in-note"></small></div>
+        <div class="tile"><h3>Grid out</h3><p><span id="today-out" class="mid">–</span> kWh</p><small id="today-out-note"></small></div>
         <div class="tile"><h3>Gas</h3><p><span id="today-gas" class="mid">–</span> m³</p></div>
       </div>
       <p class="note" id="today-note"></p>
@@ -57,7 +57,7 @@
     <section class="card wide">
       <h2>Last days</h2>
       <p class="age" id="hist-note">loading…</p>
-      <table id="hist"><thead><tr><th>Day</th><th class="num">Taken</th><th class="num">Delivered</th><th class="num">House</th><th class="num">Solar</th><th class="num">Gas</th></tr></thead><tbody></tbody></table>
+      <table id="hist"><thead><tr><th>Day</th><th class="num">House</th><th class="num">Solar</th><th class="num">Grid in</th><th class="num">Grid out</th><th class="num">Gas</th></tr></thead><tbody></tbody></table>
     </section>
   </main>
 
