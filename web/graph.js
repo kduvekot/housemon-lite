@@ -43,7 +43,9 @@ let geo = null;
 
 function draw() {
   const scroll = $("#scroll"), chart = $("#chart"), yaxis = $("#yaxis");
-  const view = scroll.clientWidth;                        // visible width in px
+  // visible width in px: the chart area minus the W axis (not the scrolling
+  // box itself, which can measure too small before the page is laid out)
+  const view = Math.max(120, $(".chart-wrap").clientWidth - AXIS_W);
   const width = Math.round(view * state.zoom);            // whole chart in px
   const H = Math.round(Math.min(380, Math.max(220, view * 0.45)));
   const n = data.house.length, t0 = Date.parse(data.start);
@@ -301,7 +303,13 @@ $("#scroll").addEventListener("wheel", (ev) => {
   ev.preventDefault();
   $("#scroll").scrollLeft += dx;
 }, { passive: false });
-window.addEventListener("resize", () => data && setZoom(state.zoom));
+// Redraw when the chart area changes width: a first measurement before the
+// page was laid out, turning the phone, the browser bar coming and going.
+let lastWidth = 0;
+new ResizeObserver(() => {
+  const w = $(".chart-wrap").clientWidth;
+  if (data && w && Math.abs(w - lastWidth) > 2) { lastWidth = w; setZoom(state.zoom); }
+}).observe($(".chart-wrap"));
 matchMedia("(prefers-color-scheme: dark)").onchange = () => data && setZoom(state.zoom);
 load();
 setInterval(load, 60 * 1000);
