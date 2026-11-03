@@ -90,6 +90,35 @@ private directories stay as they are.
 Options: `housemon_lite.py --help` (port, bind address, log directories,
 time zone of the day boundary).
 
+## Update
+
+Deploy from `main`, after a pull request is merged. Copy only the files that
+changed, from a checkout on another machine (`<user>@<pi>` is the Pi's login):
+
+```sh
+git checkout main && git pull
+scp web/graph.js web/style.css <user>@<pi>:/tmp/
+ssh <user>@<pi> 'sudo install -m 0644 /tmp/graph.js /tmp/style.css /opt/housemon-lite/web/ &&
+                 rm /tmp/graph.js /tmp/style.css'
+```
+
+- **Page files** (`web/*`): no restart needed. The server sends them with
+  `Cache-Control: no-cache`, so a normal reload in the browser picks them up.
+- **Python files** (`*.py`): install them in `/opt/housemon-lite/`, then
+  `sudo systemctl restart housemon-lite.service`. The restart takes about
+  13 s on a Pi 1; the finished hours and days come from the cache in the
+  service's state directory, so they are not recalculated.
+- **The unit file**: install it in `/etc/systemd/system/`, then
+  `sudo systemctl daemon-reload` and restart the service.
+
+Check that the Pi serves what is in the repo:
+
+```sh
+for f in index.html app.js graph.html graph.js style.css config.json; do
+  [ "$(sha256sum < web/$f)" = "$(curl -s http://<pi>:3333/$f | sha256sum)" ] && echo "$f same" || echo "$f DIFFERENT"
+done
+```
+
 ## Files
 
 | File | |
