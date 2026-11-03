@@ -11,8 +11,11 @@ brief highlight on change. See README.md for the design.
   needs them.
 - The repo is public: no secrets, hostnames, addresses, serial numbers or
   other home-specific details in it.
-- Ask before installing anything and before any `sudo` on the bench Pi;
-  ask before starting or changing services on the Pis that run the loggers.
+- Installing is allowed when the software comes from a package manager
+  (apt, PyPI, …) or from the official site or repository of a reputable
+  open-source project (owner, 2026-11-03); say what is installed. Other
+  sources: ask first. Ask before other `sudo` on the bench Pi, and before
+  starting or changing services on the Pis that run the loggers.
 - Commits as `Claude <noreply@anthropic.com>`; stage files by name, never
   `git add -A`; work on a branch and open a PR, the owner merges.
 - Answer in English unless the owner writes in Dutch.
