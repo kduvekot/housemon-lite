@@ -152,9 +152,8 @@ function draw() {
     }
   }
 
-  // crosshair with the values of one minute, on tap or hover
+  // a vertical line at the minute being read; its values go in the line above the chart
   geo.cross = svgEl("line", { y1: TOP, y2: H - BOTTOM, stroke: css("--muted"), visibility: "hidden" }, chart);
-  geo.tip = svgEl("text", { class: "tip", y: TOP + 28, visibility: "hidden" }, chart);
   chart.onpointermove = showValues;
   chart.onpointerdown = showValues;
 
@@ -210,7 +209,7 @@ function scrollToNav(px) {
 }
 
 function showValues(ev) {
-  const { x, n, t0, keys, cross, tip, view } = geo;
+  const { x, n, t0, keys, cross } = geo;
   const r = $("#chart").getBoundingClientRect();
   const px = ev.clientX - r.left;                      // position in the whole (wide) chart
   const i = Math.round(((px - 4) / (geo.width - 4 - RIGHT)) * (n - 1));
@@ -218,14 +217,12 @@ function showValues(ev) {
   cross.setAttribute("x1", x(i));
   cross.setAttribute("x2", x(i));
   cross.setAttribute("visibility", "visible");
-  tip.textContent = `${fmtTime(t0 + i * MINUTE)} · ` + keys.map((k) => {
+  const readout = $("#readout");
+  readout.textContent = `${fmtTime(t0 + i * MINUTE)} · ` + keys.map((k) => {
     const v = value(k, i);
     return `${NAMES[k]} ${v == null ? "–" : (k === "grid" && estimated(i) ? "≈" : "") + fmtValue(v) + " " + UNIT}`;
   }).join(" · ");
-  // keep the text inside the visible part of the chart
-  const left = $("#scroll").scrollLeft;
-  tip.setAttribute("x", Math.min(Math.max(x(i) + 8, left + 4), left + view - 330));
-  tip.setAttribute("visibility", "visible");
+  readout.classList.add("on");
 }
 
 // kWh / average / maximum per line over the part that is on screen
@@ -339,7 +336,7 @@ new ResizeObserver(() => {
 }).observe($(".chart-wrap"));
 matchMedia("(prefers-color-scheme: dark)").onchange = () => data && setZoom(state.zoom);
 if (GAS) {
-  $("#series").hidden = true;          // one line only
+  $("#series").style.display = "none";  // one line only (the hidden attribute loses to .seg's CSS)
   document.title = "housemon-lite · gas";
 }
 load();
