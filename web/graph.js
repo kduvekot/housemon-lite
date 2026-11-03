@@ -14,8 +14,13 @@ const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v
 const state = { show: { house: true, solar: true, grid: true }, zoom: 1 };
 let data = null;
 
-const NAMES = { house: "House", solar: "Solar", grid: "Grid" };
-const COLORS = { house: "--house", solar: "--solar" };
+// graph.html?kind=gas: the gas flow instead of house / solar / grid
+const GAS = new URLSearchParams(location.search).get("kind") === "gas";
+const UNIT = GAS ? "m³/h" : "W";
+const fmtValue = (v) => (GAS ? v.toFixed(v < 1 ? 2 : 1) : String(Math.round(v)));
+
+const NAMES = { house: "House", solar: "Solar", grid: "Grid", gas: "Gas" };
+const COLORS = { house: "--house", solar: "--solar", gas: "--gas" };
 const ZOOMS = [1, 2, 3, 6, 12, 24];          // 36 h, 18 h, 12 h, 6 h, 3 h, 1.5 h on screen
 const AXIS_W = 58, TOP = 12, BOTTOM = 30, RIGHT = 10;   // px
 const MINUTE = 60 * 1000;
@@ -29,13 +34,27 @@ const svgEl = (tag, attrs, parent) => {
 const fmtTime = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 // a round step for the W axis: 1, 2, 2.5 or 5 times a power of ten, at most 5 lines
 const niceStep = (span) => {
-  const p = 10 ** Math.floor(Math.log10(Math.max(span, 1) / 4));
+  const p = 10 ** Math.floor(Math.log10(Math.max(span, 1e-3) / 4));
   return [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => span / s <= 5);
 };
 
 // Grid value per minute: P1 when there is one, else the S0 estimate.
 const gridValue = (i) => data.grid[i] ?? data.gridEstimate[i];
-const value = (k, i) => (k === "grid" ? gridValue(i) : data[k][i]);
+const value = (k, i) => (k === "grid" ? gridValue(i) : k === "gas" ? data.gasRate[i] : data[k][i]);
+
+// Gas: the meter gives a reading every 5 minutes; spread each interval's use
+// over its minutes as a flow in m³/h (m³ in the interval / its length in hours).
+function gasRates(d) {
+  const n = d.house.length, t0 = Date.parse(d.start), rate = new Array(n).fill(null);
+  const pts = d.gas || [];
+  for (let p = 1; p < pts.length; p++) {
+    const [ta, ma] = pts[p - 1], [tb, mb] = pts[p];
+    if (tb - ta > 30 * MINUTE) continue;           // a gap in the data: leave it empty
+    const r = (mb - ma) / ((tb - ta) / 3.6e6);
+    for (let i = Math.max(0, Math.ceil((ta - t0) / MINUTE)); i < Math.min(n, Math.ceil((tb - t0) / MINUTE)); i++) rate[i] = r;
+  }
+  return rate;
+}
 const estimated = (i) => data.grid[i] == null && data.gridEstimate[i] != null;
 
 // Sizes and scales of the current drawing, shared by drawing, scrolling and the crosshair.
@@ -49,10 +68,10 @@ function draw() {
   const width = Math.round(view * state.zoom);            // whole chart in px
   const H = Math.round(Math.min(380, Math.max(220, view * 0.45)));
   const n = data.house.length, t0 = Date.parse(data.start);
-  const keys = ["house", "solar", "grid"].filter((k) => state.show[k]);
+  const keys = GAS ? ["gas"] : ["house", "solar", "grid"].filter((k) => state.show[k]);
 
   // value range over all 36 h (so it does not jump while scrolling); 0 always in view
-  let lo = 0, hi = 100;
+  let lo = 0, hi = GAS ? 0.5 : 100;
   for (const k of keys) for (let i = 0; i < n; i++) {
     const v = value(k, i);
     if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
@@ -73,7 +92,7 @@ function draw() {
 
   // W axis (fixed, left) and its grid lines (in the chart)
   for (let v = lo; v <= hi + 1e-9; v += stepW) {
-    svgEl("text", { x: AXIS_W - 6, y: y(v) + 4, "text-anchor": "end", class: "axis" }, yaxis).textContent = `${Math.round(v)} W`;
+    svgEl("text", { x: AXIS_W - 6, y: y(v) + 4, "text-anchor": "end", class: "axis" }, yaxis).textContent = `${fmtValue(v)} ${UNIT}`;
     svgEl("line", { x1: 0, x2: width, y1: y(v), y2: y(v), class: v === 0 ? "zero" : "gridline" }, chart);
   }
 
@@ -201,7 +220,7 @@ function showValues(ev) {
   cross.setAttribute("visibility", "visible");
   tip.textContent = `${fmtTime(t0 + i * MINUTE)} · ` + keys.map((k) => {
     const v = value(k, i);
-    return `${NAMES[k]} ${v == null ? "–" : (k === "grid" && estimated(i) ? "≈" : "") + Math.round(v) + " W"}`;
+    return `${NAMES[k]} ${v == null ? "–" : (k === "grid" && estimated(i) ? "≈" : "") + fmtValue(v) + " " + UNIT}`;
   }).join(" · ");
   // keep the text inside the visible part of the chart
   const left = $("#scroll").scrollLeft;
@@ -220,9 +239,10 @@ function updateStats() {
     const v = [];
     for (let i = a; i <= b; i++) if (value(k, i) != null) v.push(value(k, i));
     if (!v.length) return "";
-    const sum = v.reduce((p, q) => p + q, 0);
-    return `<div class="stat"><small>${NAMES[k]} · ${span}</small><br><b>${(sum / 60 / 1000).toFixed(2)} kWh</b>` +
-           `<br><small>avg ${Math.round(sum / v.length)} W · max ${Math.round(Math.max(...v))} W</small></div>`;
+    const sum = v.reduce((p, q) => p + q, 0);     // per-minute values: sum / 60 = amount
+    const amount = GAS ? `${(sum / 60).toFixed(3)} m³` : `${(sum / 60 / 1000).toFixed(2)} kWh`;
+    return `<div class="stat"><small>${NAMES[k]} · ${span}</small><br><b>${amount}</b>` +
+           `<br><small>avg ${fmtValue(sum / v.length)} ${UNIT} · max ${fmtValue(Math.max(...v))} ${UNIT}</small></div>`;
   }).join("");
 }
 
@@ -240,7 +260,10 @@ function setZoom(zoom, atEnd) {
 async function load() {
   try {
     const fresh = await (await fetch("api/series?hours=36", { cache: "no-store" })).json();
-    if (!fresh.house.some((v) => v != null) && !fresh.grid.some((v) => v != null)) {
+    if (GAS) fresh.gasRate = gasRates(fresh);
+    const empty = GAS ? !fresh.gasRate.some((v) => v != null)
+                      : !fresh.house.some((v) => v != null) && !fresh.grid.some((v) => v != null);
+    if (empty) {
       $("#note").textContent = "The Pi is starting up and loading its figures; the graph follows within a few minutes.";
       return;
     }
@@ -253,7 +276,11 @@ async function load() {
     scroll.scrollLeft = atEnd ? geo.width : left;
     placeWindow();
     updateStats();
-    $("#note").textContent = `Per-minute averages, updated every minute (last: ${fmtTime(Date.now())}). ` +
+    $("#note").textContent = GAS
+      ? `Gas flow in m³/h from the meter's readings (one every 5 minutes), updated every minute (last: ${fmtTime(Date.now())}). ` +
+        "Zoom with − and +; drag the strip below the chart to move; drag in the chart to read values. " +
+        "The figures below cover what is on screen."
+      : `Per-minute averages, updated every minute (last: ${fmtTime(Date.now())}). ` +
       "Grid above 0 = taken from the grid, below 0 = delivered; dashed = estimated from S0 where there is no P1 data. " +
       "Zoom with − and +; drag the strip below the chart to move; drag in the chart to read values. " +
       "The figures below cover what is on screen.";
@@ -311,5 +338,9 @@ new ResizeObserver(() => {
   if (data && w && Math.abs(w - lastWidth) > 2) { lastWidth = w; setZoom(state.zoom); }
 }).observe($(".chart-wrap"));
 matchMedia("(prefers-color-scheme: dark)").onchange = () => data && setZoom(state.zoom);
+if (GAS) {
+  $("#series").hidden = true;          // one line only
+  document.title = "housemon-lite · gas";
+}
 load();
 setInterval(load, 60 * 1000);

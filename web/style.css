@@ -12,6 +12,7 @@
   --solar: #d99a00;
   --in: #c0392b;
   --out: #2e9d58;
+  --gas: #8e44ad;
   color-scheme: light dark;
 }
 
@@ -28,6 +29,7 @@
     --solar: #f0b429;
     --in: #e8695b;
     --out: #4cc27a;
+    --gas: #b38ad9;
   }
 }
 
