@@ -12,6 +12,7 @@
   --solar: #d99a00;
   --in: #c0392b;
   --out: #2e9d58;
+  --gas: #8e44ad;
   color-scheme: light dark;
 }
 
@@ -28,6 +29,7 @@
     --solar: #f0b429;
     --in: #e8695b;
     --out: #4cc27a;
+    --gas: #b38ad9;
   }
 }
 
@@ -115,7 +117,10 @@ main.graph-page { display: block; }
 .gridline { stroke: var(--line); }
 .zero { stroke: var(--muted); }
 .midnight { stroke: var(--muted); stroke-dasharray: 4 4; }
-.tip { font-size: 13px; fill: var(--text); }
+/* the values at the line in the chart: above the chart, always fully visible */
+.readout { margin: 0 0 6px; min-height: 1.4em; font-size: .9em; font-variant-numeric: tabular-nums;
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.readout:not(.on) { color: var(--muted); }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: .85em; margin: 6px 4px 4px; }
 .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 12px 0; }

@@ -7,7 +7,9 @@ Per UTC hour:
   channels  S0 pulses per node and channel in that hour (for "today");
   gridIn, gridOut   the S0 grid estimate (house minus solar per 30 s) in pulses;
   first, last       time of the first and last S0 line in that hour;
-  lastPulse         per node and channel, the time of its last pulse in that hour.
+  lastPulse         per node and channel, the time of its last pulse in that hour;
+  gas               the gas meter readings seen in that hour, [UTC time, m3]
+                    (DSMR 5 sends a new one every 5 minutes).
 
 The current hour is filled live. A completed hour is stored once as a small
 JSON file (cache/hours/YYYYMMDDHH.json); at start-up only hours that are not
@@ -26,8 +28,9 @@ import daystats
 log = logging.getLogger("housemon-lite")
 
 P1_NET = re.compile(rb"1-0:1\.7\.0\((\d+\.\d+)\*kW\).*?1-0:2\.7\.0\((\d+\.\d+)\*kW\)", re.S)
+P1_GAS = re.compile(rb"0-\d:24\.2\.1\((\d{12})([SW])\)\((\d+\.\d+)\*m3\)")
 SETTLE = timedelta(minutes=10)   # an hour is final this long after it ended
-FORMAT = 3                        # cache layout; older files are rebuilt
+FORMAT = 4                        # cache layout; older files are rebuilt
 
 
 def hour_of(when):
@@ -36,13 +39,31 @@ def hour_of(when):
 
 def empty_hour():
     return {"minutes": [[0, 0, 0.0, 0] for _ in range(60)],   # house, solar, P1 W-sum, P1 count
-            "channels": {}, "gridIn": 0, "gridOut": 0, "first": None, "last": None, "lastPulse": {}}
+            "channels": {}, "gridIn": 0, "gridOut": 0, "first": None, "last": None, "lastPulse": {},
+            "gas": []}
 
 
 def p1_net(telegram):
     """Net grid power in W (taken minus delivered) from one telegram, or None."""
     m = P1_NET.search(telegram)
     return None if m is None else 1000 * (float(m.group(1)) - float(m.group(2)))
+
+
+def gas_reading(telegram):
+    """(UTC ISO time, m3) of the gas reading in a telegram, or None. The time
+    is the gas meter's own (local; W = winter time UTC+1, S = summer UTC+2)."""
+    m = P1_GAS.search(telegram)
+    if m is None:
+        return None
+    local = datetime.strptime(m.group(1).decode(), "%y%m%d%H%M%S")
+    utc = local - timedelta(hours=1 if m.group(2) == b"W" else 2)
+    return iso(utc), float(m.group(3))
+
+
+def add_gas(rec, telegram):
+    g = gas_reading(telegram)
+    if g and (not rec["gas"] or rec["gas"][-1][0] != g[0]):
+        rec["gas"].append(list(g))
 
 
 def iso(when):
@@ -123,6 +144,7 @@ class HourStore:
                     m = built[hour]["minutes"][min(59, (offset + k) // 60)]
                     m[2] += net
                     m[3] += 1
+                add_gas(built[hour], tel)
         now = datetime.now(timezone.utc)
         for hour, rec in built.items():
             self.hours[hour] = rec
@@ -166,10 +188,13 @@ class HourStore:
         self._roll(when)
         net = p1_net(telegram)
         rec = self.hours.get(hour_of(when))
-        if net is not None and rec is not None:
+        if rec is None:
+            return
+        if net is not None:
             m = rec["minutes"][when.minute]
             m[2] += net
             m[3] += 1
+        add_gas(rec, telegram)
 
     def _roll(self, when):
         """On a new UTC hour: store the finished one, start the next."""
@@ -245,6 +270,25 @@ class HourStore:
                     out[c] = stamp
         return out
 
+    def gas_points(self, start, end):
+        """Gas readings between start and end as [epoch ms, m3], oldest first,
+        plus the last one before `start` (to know the first interval)."""
+        seen = {}
+        hour = start - timedelta(hours=1)
+        while hour <= end:
+            for stamp, m3 in (self.hours.get(hour) or {}).get("gas", []):
+                seen[stamp] = m3
+            hour += timedelta(hours=1)
+        out, before = [], None
+        start_text = iso(start)
+        for stamp in sorted(seen):
+            ms = int(datetime.fromisoformat(stamp).replace(tzinfo=timezone.utc).timestamp() * 1000)
+            if stamp < start_text:
+                before = [ms, seen[stamp]]
+            else:
+                out.append([ms, seen[stamp]])
+        return ([before] if before else []) + out
+
     # --- for the page --------------------------------------------------------------
 
     def series(self, hours, pulse_wh):
@@ -271,4 +315,5 @@ class HourStore:
                 out["grid"].append(grid)
                 out["gridEstimate"].append(house - solar if grid is None and has_s0 else None)
             hour += timedelta(hours=1)
+        out["gas"] = self.gas_points(start, now)
         return out
