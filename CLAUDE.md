@@ -16,10 +16,12 @@ brief highlight on change. See README.md for the design.
 - Commits as `Claude <noreply@anthropic.com>`; stage files by name, never
   `git add -A`; work on a branch and open a PR, the owner merges.
 - Answer in English unless the owner writes in Dutch.
-- Small steps (owner, 2026-11-03): one purpose per command (e.g. copy,
-  then restart, then check), a sentence before each step on what it does
-  and why, and a look at its result before the next one. The owner follows
-  along and wants quick feedback per step, not one long combined script.
+- Small steps for interactive work (owner, 2026-11-03): one purpose per
+  command (e.g. copy, then restart, then check), a sentence before each
+  step on what it does and why, and a look at its result before the next
+  one; the owner follows along and wants quick feedback per step. Bulk
+  work (large analyses, rebuilds) may stay one script, but say up front
+  that it is bulk and roughly how long it may take.
 
 ## Design rules
 
