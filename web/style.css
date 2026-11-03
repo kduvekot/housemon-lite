@@ -103,7 +103,14 @@ main.graph-page { display: block; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--card); }
 .seg button { border: 0; background: none; color: var(--text); padding: 6px 12px; font: inherit; cursor: pointer; }
 .seg button.on { background: var(--accent); color: #fff; }
-#chart { width: 100%; height: auto; display: block; touch-action: none; }
+.chart-wrap { display: flex; }
+#yaxis { flex: none; display: block; }
+/* the chart moves with the strip below it; a drag in the chart moves the value line */
+.scroll { flex: 1; min-width: 0; overflow: hidden; }
+#chart { display: block; touch-action: pan-y; }
+#nav { display: block; width: 100%; height: 44px; margin-top: 6px; touch-action: none; cursor: grab; }
+#nav .window { fill: var(--accent); fill-opacity: .18; stroke: var(--accent); }
+#zoom-label { padding: 6px 10px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 4.5em; text-align: center; }
 .axis { fill: var(--muted); font-size: 12px; }
 .gridline { stroke: var(--line); }
 .zero { stroke: var(--muted); }

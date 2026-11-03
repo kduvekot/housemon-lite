@@ -18,11 +18,19 @@
       <div class="seg" id="series">
         <button data-s="house">House</button><button data-s="solar">Solar</button><button data-s="grid">Grid</button>
       </div>
-      <div class="seg" id="range">
-        <button data-h="6">6 h</button><button data-h="36">36 h</button>
+      <div class="seg" id="zoom">
+        <button data-z="out" title="zoom out">−</button><span id="zoom-label">36 h</span><button data-z="in" title="zoom in">+</button>
+        <button data-z="6h">last 6 h</button><button data-z="all">all</button>
       </div>
     </div>
-    <div class="card"><svg id="chart" viewBox="0 0 1000 380" preserveAspectRatio="none"></svg><div class="legend" id="legend"></div></div>
+    <div class="card">
+      <div class="chart-wrap">
+        <svg id="yaxis"></svg>
+        <div class="scroll" id="scroll"><svg id="chart"></svg></div>
+      </div>
+      <svg id="nav" aria-label="drag to move through the 36 hours"></svg>
+      <div class="legend" id="legend"></div>
+    </div>
     <div class="stats" id="stats"></div>
     <p class="note" id="note">loading…</p>
   </main>
