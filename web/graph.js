@@ -84,7 +84,10 @@ function draw() {
   // box itself, which can measure too small before the page is laid out)
   const view = Math.max(120, $(".chart-wrap").clientWidth - AXIS_W);
   const width = Math.round(view * state.zoom);            // whole chart in px
-  const H = Math.round(Math.min(380, Math.max(220, view * 0.45)));
+  // height: from the width, but low enough that the whole page (buttons,
+  // strip, legend, figures, note: ~400 px) fits the window, e.g. a landscape
+  // iPad in Safari; never below 200 px
+  const H = Math.round(Math.max(200, Math.min(380, Math.max(220, view * 0.45), innerHeight - 400)));
   const n = data.house.length, t0 = Date.parse(data.start);
   const keys = GAS ? ["gas"] : ["house", "solar", "grid"].filter((k) => state.show[k]);
 
@@ -184,8 +187,10 @@ function draw() {
 
   // a vertical line at the minute being read; its values go in the line above the chart
   geo.cross = svgEl("line", { y1: TOP, y2: H - BOTTOM, stroke: css("--muted"), visibility: "hidden" }, chart);
+  // The chart keeps the pointer for the whole drag (pointer capture), so a
+  // drift of the finger or the minute's redraw under it does not end the drag.
   chart.onpointermove = showValues;
-  chart.onpointerdown = showValues;
+  chart.onpointerdown = (ev) => { chart.setPointerCapture(ev.pointerId); showValues(ev); };
 
   $("#legend").innerHTML = keys.map((k) => k === "grid"
     ? `<span><i style="background:${css("--in")}"></i>grid in</span><span><i style="background:${css("--out")}"></i>grid out</span><span>- - - estimated from S0</span>`
@@ -395,6 +400,12 @@ new ResizeObserver(() => {
   const w = $(".chart-wrap").clientWidth;
   if (data && w && Math.abs(w - lastWidth) > 2) { lastWidth = w; setZoom(state.zoom); }
 }).observe($(".chart-wrap"));
+// ...and when the window height changes a lot (turning a tablet); small
+// changes, such as Safari's bars sliding in and out, are left alone
+let lastHeight = innerHeight;
+addEventListener("resize", () => {
+  if (data && Math.abs(innerHeight - lastHeight) > 60) { lastHeight = innerHeight; setZoom(state.zoom); }
+});
 matchMedia("(prefers-color-scheme: dark)").onchange = () => data && setZoom(state.zoom);
 if (GAS) {
   $("#series").style.display = "none";  // one line only (the hidden attribute loses to .seg's CSS)

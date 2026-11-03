@@ -107,11 +107,14 @@ main.graph-page { display: block; }
 .seg button.on { background: var(--accent); color: #fff; }
 .chart-wrap { display: flex; }
 #yaxis { flex: none; display: block; }
-/* the chart moves with the strip below it; a drag in the chart moves the value line */
+/* the chart moves with the strip below it; a drag in the chart moves the value
+   line. touch-action none: with pan-y, Safari took a drag that drifted a little
+   up or down for page scrolling and cancelled it. */
 .scroll { flex: 1; min-width: 0; overflow: hidden; }
-#chart { display: block; touch-action: pan-y; }
+#chart { display: block; touch-action: none; }
 #nav { display: block; width: 100%; height: 44px; margin-top: 6px; touch-action: none; cursor: grab; }
 #nav .window { fill: var(--accent); fill-opacity: .18; stroke: var(--accent); }
+#zoom { margin-left: auto; }   /* on the right, also when the series buttons are hidden (gas) */
 #zoom-label { padding: 6px 10px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 4.5em; text-align: center; }
 .axis { fill: var(--muted); font-size: 12px; }
 .gridline { stroke: var(--line); }
