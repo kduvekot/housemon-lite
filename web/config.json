@@ -10,7 +10,7 @@
       "4": { "name": "Zon 1",    "kind": "solar" },
       "5": { "name": "Groep 6" },
       "6": { "name": "Groep 9" },
-      "7": { "name": "Groep 10" },
+      "7": { "name": "Groep 10", "kind": "heater" },
       "8": { "name": "Groep 12" }
     }
   },

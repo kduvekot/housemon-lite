@@ -43,6 +43,18 @@ loggers ──> raw log files ──> housemon_lite.py ──SSE──> browser 
   the logger's, e.g. to fill the last days from another receiver. Read only
   if the directory exists; it can simply be removed once those days have
   left the 7-day table.
+- **Heating** (optional): the airco's compact extract from
+  [lg-airco-logger](https://github.com/kduvekot/lg-airco-logger)
+  (`lg-airco-compact.py`, pushed to this Pi with rsync) in
+  `/var/lib/housemon-lite-airco` (or `--airco-dir`), `YYYY/YYYYMMDD.csv` (UTC).
+  The server follows today's file and sends the newest state (on/off, mode,
+  fan, the airco's own reading, target) and LG's energy totals over the same
+  event stream; `/api/airco?hours=36` returns the lines for the graph. The
+  page then shows a Heating card (airco plus the S0 channels of kind
+  `heater` in `config.json`) that links to `heating.html`: the airco's
+  reading and target, its power from LG's 5-minute totals, and the heater
+  group per minute. Read only if the directory exists; the card stays hidden
+  without it.
 - **The browser does the work**: decoding the S0 packets, parsing the P1
   telegram including its CRC check (damaged telegrams are skipped), and the
   display. Plain JavaScript and CSS, no framework, no build step.
@@ -129,5 +141,6 @@ done
 | `web/index.html`, `web/style.css` | the page (light and dark theme) |
 | `web/app.js` | decoding and display |
 | `web/graph.html`, `web/graph.js` | the graph |
+| `web/heating.html`, `web/heating.js` | the heating graph (airco and heater group) |
 | `web/config.json` | channel names and settings |
 | `housemon-lite.service` | systemd unit |

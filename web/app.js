@@ -1,7 +1,8 @@
 // housemon-lite browser side: receives raw S0 lines and P1 telegrams from the
 // Pi over Server-Sent Events and does all decoding and display here. The Pi
 // also sends per-day figures ("days"): the P1 meter readings at midnight, the
-// S0 pulses so far today (with every S0 line) and the last completed days.
+// S0 pulses so far today (with every S0 line) and the last completed days;
+// and, if the Pi receives it, the airco's newest state and LG's energy totals.
 "use strict";
 
 const $ = (sel) => document.querySelector(sel);
@@ -74,8 +75,8 @@ function decodeS0(msg) {
   const now = Date.now();
   const packetTime = Date.parse(msg.time);         // when the Pi received this packet
   const wattPerMs = cfg.pulseWh * 3.6e6;   // W x ms for one pulse (0.5 Wh -> 1,800,000)
-  const sumNow = { house: 0, solar: 0 };
-  const sumToday = { house: 0, solar: 0 };
+  const sumNow = { house: 0, solar: 0, heater: 0 };
+  const sumToday = { house: 0, solar: 0, heater: 0 };
 
   for (const [ch, info] of Object.entries(cfg.channels)) {
     const i = 4 * (Number(ch) - 1);
@@ -128,6 +129,8 @@ function decodeS0(msg) {
     setText($(`#now-${kind}`), fmt(sumNow[kind]));
     setText($(`#today-${kind}`), fmt(sumToday[kind], 2));
   }
+  heaterNow = { watt: sumNow.heater, today: sumToday.heater };
+  showHeater();
   // Grid in/out today: from P1 when it covers the whole day, else estimated
   // from S0 (house minus solar per 30 s, worked out by the Pi).
   if (msg.todayGrid && !p1CoversToday()) {
@@ -263,6 +266,66 @@ function decodeP1(msg) {
   sources.p1.last = msg.seen * 1000;
 }
 
+// --- heating: the airco (LG, via the compact extract) and the electric heater (S0) ---
+
+let airco = null;          // latest "airco" message: { state, energy }
+let heaterNow = null;      // from the S0 heater channels: { watt, today }
+
+const MODES = { HEAT: "heating", COOL: "cooling", AUTO: "auto", AIR_DRY: "drying", FAN: "fan only" };
+const hasHeater = () => Object.values(config.s0.channels).some((c) => c.kind === "heater");
+
+// LG's total for the newest day, and the power from its last two totals (LG
+// updates them every 5 minutes; a longer gap gives no power).
+function aircoEnergy() {
+  const dates = Object.keys(airco?.energy ?? {}).sort();
+  if (!dates.length) return null;
+  const pts = airco.energy[dates[dates.length - 1]];
+  const [t2, wh2] = pts[pts.length - 1];
+  let watt = null;
+  if (pts.length > 1) {
+    const [t1, wh1] = pts[0];
+    const hours = (Date.parse(t2) - Date.parse(t1)) / 3.6e6;
+    // 4 to 15 minutes: a shorter step (the first after the logger started) covers only part of a period
+    if (hours >= 4 / 60 && hours <= 0.25) watt = (wh2 - wh1) / hours;
+  }
+  return { wh: wh2, watt, time: Date.parse(t2) };
+}
+
+function onAirco(msg) {
+  airco = msg;
+  $("#heat-card").hidden = false;
+  const st = msg.state;
+  if (st) {
+    const on = st.operation === "POWER_ON";
+    let [v] = row("heat", "airco-on", "Airco", ["num"]);
+    setText(v, on ? `on · ${MODES[st.mode] ?? st.mode.toLowerCase()}` : "off");
+    [v] = row("heat", "airco-temp", "Airco's own reading", ["num"]);
+    setText(v, `${fmt(st.reading, 1)} °C`);
+    [v] = row("heat", "airco-target", "Target", ["num"]);
+    setText(v, `${fmt(st.target, 1)} °C`);
+    [v] = row("heat", "airco-fan", "Fan", ["num"]);
+    setText(v, st.fan.toLowerCase());
+    sources.airco.last = Date.parse(st.time);
+  }
+  const e = aircoEnergy();
+  if (e) {
+    let [v] = row("heat", "airco-power", "Airco power (LG, last 5 min)", ["num"]);
+    setText(v, e.watt === null ? "–" : `${fmt(e.watt)} W`);
+    [v] = row("heat", "airco-today", "Airco today (LG)", ["num"]);
+    setText(v, `${fmt(e.wh / 1000, 2)} kWh`);
+  }
+  showHeater();
+}
+
+// The heater row only once the card is shown (that is: once airco data came).
+function showHeater() {
+  if (!airco || !heaterNow || !hasHeater()) return;
+  let [v] = row("heat", "heater-now", "Heater group (S0)", ["num"]);
+  setText(v, `${fmt(heaterNow.watt)} W`);
+  [v] = row("heat", "heater-today", "Heater group today", ["num"]);
+  setText(v, `${fmt(heaterNow.today, 2)} kWh`);
+}
+
 // --- days: today's note and the last completed days ------------------------------
 
 const p1CoversToday = () => Boolean(days?.today?.p1First) && !days.today.p1Partial;
@@ -324,7 +387,8 @@ function onDays(msg) {
 
 // --- freshness and connection ------------------------------------------------------
 
-const sources = { s0: { last: null }, p1: { last: null } };
+// airco: its state line comes on every change and at least every 15 minutes
+const sources = { s0: { last: null }, p1: { last: null }, airco: { last: null, staleAfter: 20 * 60 } };
 
 function updateAges() {
   const now = Date.now();
@@ -335,7 +399,7 @@ function updateAges() {
     let text = `updated ${clock(new Date(src.last))} · ${age} s ago`;
     if (name === "p1" && p1Bad) text += ` · ${p1Bad} damaged telegram${p1Bad > 1 ? "s" : ""} skipped`;
     el.textContent = text;
-    el.classList.toggle("stale", age > config.staleAfter);
+    el.classList.toggle("stale", age > (src.staleAfter ?? config.staleAfter));
   }
 }
 
@@ -352,6 +416,7 @@ function connect() {
   events.addEventListener("s0", (e) => decodeS0(JSON.parse(e.data)));
   events.addEventListener("p1", (e) => decodeP1(JSON.parse(e.data)));
   events.addEventListener("days", (e) => onDays(JSON.parse(e.data)));
+  events.addEventListener("airco", (e) => onAirco(JSON.parse(e.data)));
 }
 
 // A phone freezes background tabs and drops their connection; when the page
