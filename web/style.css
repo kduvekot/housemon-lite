@@ -13,6 +13,8 @@
   --in: #c0392b;
   --out: #2e9d58;
   --gas: #8e44ad;
+  --airco: #0f9d6e;
+  --heater: #d9480f;
   color-scheme: light dark;
 }
 
@@ -30,6 +32,8 @@
     --in: #e8695b;
     --out: #4cc27a;
     --gas: #b38ad9;
+    --airco: #34c48f;
+    --heater: #ff8a4c;
   }
 }
 
@@ -80,6 +84,8 @@ h2 { margin: 0; font-size: 1em; font-weight: 600; }
   main { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; align-items: start; }
   .band, .wide { grid-column: 1 / -1; }
   .tiles.five { grid-template-columns: repeat(5, 1fr); }
+  /* left: S0 and heating stacked; right: the (long) smart meter card */
+  .column { min-width: 0; }
 }
 .age { margin: .2em 0 .6em; color: var(--muted); font-size: .85em; }
 .age.stale { color: var(--warn); }
@@ -92,6 +98,11 @@ td.unit { color: var(--muted); }
 td.muted { color: var(--muted); }
 
 footer { color: var(--muted); font-size: .8em; padding-bottom: 24px; }
+
+/* the heating card links to its graph */
+a.card.link { display: block; color: inherit; text-decoration: none; }
+a.card.link:hover { border-color: var(--accent); }
+a.card.link .more { float: right; color: var(--accent); font-weight: 400; font-size: .9em; }
 
 /* "Now" tiles link to the graph */
 a.tile { color: inherit; text-decoration: none; }
@@ -135,3 +146,8 @@ main.graph-page { display: block; }
 .flash { animation: flash 1.5s ease-out; }
 @keyframes flash { from { background: var(--flash); } to { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { .flash { animation: none; } }
+
+/* heating graph */
+.heat-chart { display: block; width: 100%; touch-action: none; }
+.readout.wrap { white-space: normal; }
+.bar h2 { align-self: center; }

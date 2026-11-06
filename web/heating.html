@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>housemon-lite · heating</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="heating.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>housemon<span>-lite</span></h1>
+    <a class="back" href="./">← now</a>
+  </header>
+
+  <main class="graph-page">
+    <div class="bar">
+      <h2>Heating</h2>
+      <div class="seg" id="range">
+        <button data-h="6">6 h</button><button data-h="12">12 h</button><button data-h="36">36 h</button>
+      </div>
+    </div>
+    <div class="card">
+      <p class="readout wrap" id="readout">Tap or drag in the chart to read the values.</p>
+      <svg id="heat-chart" class="heat-chart"></svg>
+      <div class="legend" id="legend"></div>
+    </div>
+    <p class="note" id="note">loading…</p>
+  </main>
+</body>
+</html>

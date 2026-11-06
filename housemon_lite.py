@@ -10,7 +10,9 @@ The server does as little as possible, so it runs comfortably on a Pi 1:
     telegram, unchanged, and pushes them to the browsers over Server-Sent
     Events (/events);
   * per local day (daystats.py) it keeps the P1 meter readings at midnight,
-    the S0 pulses so far, and the figures of the last 7 completed days.
+    the S0 pulses so far, and the figures of the last 7 completed days;
+  * optionally it follows the airco's compact extract (from lg-airco-logger,
+    pushed to this Pi) and sends its newest state and energy totals.
 
 Decoding, the P1 CRC check of live telegrams and the display all happen in
 the browser (web/app.js). Only the Python standard library is used.
@@ -45,6 +47,10 @@ DEFAULT_TZ = "Europe/Amsterdam"
 # Optional extra S0 data in the same layout (e.g. a temporary backfill from
 # another receiver); read only if the directory exists.
 DEFAULT_S0_EXTRA = "/var/lib/housemon-lite-backfill/s0"
+# Optional: the airco's compact extract (lg-airco-logger's lg-airco-compact.py),
+# YYYY/YYYYMMDD.csv (UTC); read only if the directory exists.
+DEFAULT_AIRCO_DIR = "/var/lib/housemon-lite-airco"
+AIRCO_HOURS = 36        # hours of airco lines /api/airco returns at most
 
 S0_LINE = re.compile(r"^L (\S+) \S+ (OK (\d+)(?: \d+)*)\s*$")
 P1_TELEGRAM = re.compile(rb"/[^!]*![0-9A-Fa-f]{4}\r?\n")
@@ -64,11 +70,16 @@ def p1_path(base):
     return lambda now: base / now.strftime("%Y") / now.strftime("%Y%m%d") / (now.strftime("%H") + ".txt")
 
 
+def airco_path(base):
+    return lambda now: base / now.strftime("%Y") / (now.strftime("%Y%m%d") + ".csv")
+
+
 class Follower:
     """Returns the bytes appended to a rotating log file since the last call."""
 
-    def __init__(self, path_for):
+    def __init__(self, path_for, backlog=BACKLOG):
         self.path_for = path_for
+        self.backlog = backlog
         self.path = None
         self.pos = 0
 
@@ -79,7 +90,7 @@ class Follower:
             if new.exists():
                 # first time: start a little before the end, to show data at once
                 self.path = new
-                self.pos = max(0, new.stat().st_size - BACKLOG)
+                self.pos = max(0, new.stat().st_size - self.backlog)
         elif new != self.path and new.exists():
             # the logger moved on to a new file: finish the old one first
             data += self._read()
@@ -224,7 +235,75 @@ class DayStore:
         })
 
 
-def poll_loop(hub, s0, p1, days, hours):
+class Airco:
+    """The newest airco state and LG's energy totals from the compact extract.
+    Lines: <UTC time>,state,<operation>,<mode>,<fan>,<reading>,<target> and
+    <UTC time>,energy,<LG date>,<Wh so far>. The browser works out the power
+    from the last two totals of a day (LG updates them every 5 minutes)."""
+
+    def __init__(self, hub, base):
+        self.hub, self.base = hub, base
+        self.follower = Follower(airco_path(base), backlog=1 << 20) if base else None
+        self.buf = ""
+        self.state = None
+        self.energy = {}        # LG date -> [[time, Wh], [time, Wh]]: the last two totals
+
+    def poll(self):
+        if self.follower is None:
+            return
+        self.buf += self.follower.poll().decode("ascii", "replace")
+        *lines, self.buf = self.buf.split("\n")
+        changed = False
+        for line in lines:
+            f = line.strip().split(",")
+            if len(f) == 7 and f[1] == "state":
+                self.state = {"time": f[0], "operation": f[2], "mode": f[3], "fan": f[4],
+                              "reading": num(f[5]), "target": num(f[6])}
+                changed = True
+            elif len(f) == 4 and f[1] == "energy":
+                pts = self.energy.setdefault(f[2], [])
+                if not pts or pts[-1][1] != num(f[3]):
+                    pts.append([f[0], num(f[3])])
+                    del pts[:-2]
+                for d in sorted(self.energy)[:-2]:
+                    del self.energy[d]
+                changed = True
+        if changed:
+            self.hub.publish("airco", {"state": self.state, "energy": self.energy})
+
+    def lines(self, hours):
+        """The compact lines of the last `hours` hours, oldest first, as lists."""
+        if not self.base:
+            return []
+        now = datetime.now(timezone.utc)
+        start = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+        out, day = [], (now - timedelta(hours=hours)).date()
+        while day <= now.date():
+            path = self.base / day.strftime("%Y") / (day.strftime("%Y%m%d") + ".csv")
+            try:
+                with open(path, encoding="ascii", errors="replace") as fh:
+                    for line in fh:
+                        f = line.strip().split(",")
+                        if len(f) >= 4 and f[0] >= start:
+                            out.append([f[0], f[1]] + [num(x) for x in f[2:]])
+            except OSError:
+                pass
+            day += timedelta(days=1)
+        return out
+
+
+def num(text):
+    """A number if the text is one, else the text (e.g. "HEAT")."""
+    try:
+        return int(text)
+    except ValueError:
+        try:
+            return float(text)
+        except ValueError:
+            return text
+
+
+def poll_loop(hub, s0, p1, days, hours, airco):
     # the hours first: today's S0 figures are made from them
     now = series.hour_of(datetime.now(timezone.utc))
     built = hours.load(now - timedelta(hours=GRAPH_HOURS - 1), now)
@@ -236,6 +315,7 @@ def poll_loop(hub, s0, p1, days, hours):
     while True:
         try:
             s0_buf, p1_buf = poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf)
+            airco.poll()
         except Exception:           # log and go on: the live data must keep flowing
             log.exception("error while reading the logs; continuing")
         time.sleep(POLL_INTERVAL)
@@ -291,6 +371,7 @@ OLD_PATHS = ("/status",)
 class Handler(SimpleHTTPRequestHandler):
     hub = None
     hours = None
+    airco = None
     pulse_wh = 0.5
 
     def do_GET(self):
@@ -303,6 +384,13 @@ class Handler(SimpleHTTPRequestHandler):
             except ValueError:
                 n = 36
             self.send_json(self.hours.series(n, self.pulse_wh))
+        elif self.path.startswith("/api/airco"):
+            query = parse_qs(urlsplit(self.path).query)
+            try:
+                n = max(1, min(AIRCO_HOURS, int(query.get("hours", [str(AIRCO_HOURS)])[0])))
+            except ValueError:
+                n = AIRCO_HOURS
+            self.send_json({"lines": self.airco.lines(n)})
         elif self.path == "/api/latest":
             self.send_json({k: v for k, (_, v) in self.hub.items.items()})
         elif urlsplit(self.path).path.rstrip("/") in OLD_PATHS:
@@ -362,6 +450,8 @@ def main(argv=None):
     p.add_argument("--tz", default=DEFAULT_TZ, help=f"time zone of the day boundary (default: {DEFAULT_TZ})")
     p.add_argument("--s0-extra-dir", action="append", default=None,
                    help=f"extra S0 data, same layout; repeatable (default: {DEFAULT_S0_EXTRA} if it exists)")
+    p.add_argument("--airco-dir", default=DEFAULT_AIRCO_DIR,
+                   help=f"the airco's compact extract (default: {DEFAULT_AIRCO_DIR}, if it exists)")
     p.add_argument("--state-dir", default=os.environ.get("STATE_DIRECTORY"),
                    help="where completed days are cached (default: $STATE_DIRECTORY from systemd; none: no cache)")
     p.add_argument("--web-dir", default=str(Path(__file__).resolve().parent / "web"), help="static files")
@@ -377,6 +467,7 @@ def main(argv=None):
     grid = {"node": cfg["node"],
             "house": [int(c) for c, i in cfg["channels"].items() if i.get("kind") == "house"],
             "solar": [int(c) for c, i in cfg["channels"].items() if i.get("kind") == "solar"]}
+    heater = [int(c) for c, i in cfg["channels"].items() if i.get("kind") == "heater"]
     extra = args.s0_extra_dir if args.s0_extra_dir is not None else [DEFAULT_S0_EXTRA]
     s0dirs = [Path(args.s0_dir)] + [Path(d) for d in extra if Path(d).is_dir()]
 
@@ -384,20 +475,22 @@ def main(argv=None):
     cache_dir = Path(args.state_dir) / "days" if args.state_dir else None
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
-    hours = series.HourStore(s0dirs, Path(args.p1_dir), grid, Path(args.state_dir) if args.state_dir else None)
+    hours = series.HourStore(s0dirs, Path(args.p1_dir), grid, Path(args.state_dir) if args.state_dir else None, heater)
     days = DayStore(hub, ZoneInfo(args.tz), s0dirs, Path(args.p1_dir), grid, cache_dir, hours)
     s0 = Follower(s0_path(Path(args.s0_dir)))
     p1 = Follower(p1_path(Path(args.p1_dir)))
-    threading.Thread(target=poll_loop, args=(hub, s0, p1, days, hours), daemon=True).start()
+    airco = Airco(hub, Path(args.airco_dir) if Path(args.airco_dir).is_dir() else None)
+    threading.Thread(target=poll_loop, args=(hub, s0, p1, days, hours, airco), daemon=True).start()
 
     Handler.hub = hub
     Handler.hours = hours
+    Handler.airco = airco
     Handler.pulse_wh = cfg.get("pulseWh", 0.5)
     server = ThreadingHTTPServer((args.bind, args.port),
                                  functools.partial(Handler, directory=args.web_dir))
     server.daemon_threads = True
-    log.info("serving %s on %s:%d (S0 %s, P1 %s, days in %s, cache %s)",
-             args.web_dir, args.bind, args.port, " + ".join(map(str, s0dirs)), args.p1_dir, args.tz, cache_dir)
+    log.info("serving %s on %s:%d (S0 %s, P1 %s, airco %s, days in %s, cache %s)",
+             args.web_dir, args.bind, args.port, " + ".join(map(str, s0dirs)), args.p1_dir, airco.base, args.tz, cache_dir)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

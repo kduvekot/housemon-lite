@@ -2,8 +2,8 @@
 Per-hour records: the basis for both the graph and "today".
 
 Per UTC hour:
-  minutes   60 x [house pulses, solar pulses, sum of P1 net watts, P1 telegrams]
-            (for the graph);
+  minutes   60 x [house pulses, solar pulses, sum of P1 net watts, P1 telegrams,
+            heater pulses] (for the graphs);
   channels  S0 pulses per node and channel in that hour (for "today");
   gridIn, gridOut   the S0 grid estimate (house minus solar per 30 s) in pulses;
   first, last       time of the first and last S0 line in that hour;
@@ -30,7 +30,7 @@ log = logging.getLogger("housemon-lite")
 P1_NET = re.compile(rb"1-0:1\.7\.0\((\d+\.\d+)\*kW\).*?1-0:2\.7\.0\((\d+\.\d+)\*kW\)", re.S)
 P1_GAS = re.compile(rb"0-\d:24\.2\.1\((\d{12})([SW])\)\((\d+\.\d+)\*m3\)")
 SETTLE = timedelta(minutes=10)   # an hour is final this long after it ended
-FORMAT = 4                        # cache layout; older files are rebuilt
+FORMAT = 5                        # cache layout; older files are rebuilt
 
 
 def hour_of(when):
@@ -38,7 +38,7 @@ def hour_of(when):
 
 
 def empty_hour():
-    return {"minutes": [[0, 0, 0.0, 0] for _ in range(60)],   # house, solar, P1 W-sum, P1 count
+    return {"minutes": [[0, 0, 0.0, 0, 0] for _ in range(60)],   # house, solar, P1 W-sum, P1 count, heater
             "channels": {}, "gridIn": 0, "gridOut": 0, "first": None, "last": None, "lastPulse": {},
             "gas": []}
 
@@ -71,8 +71,9 @@ def iso(when):
 
 
 class HourStore:
-    def __init__(self, s0dirs, p1dir, grid, cache_dir):
+    def __init__(self, s0dirs, p1dir, grid, cache_dir, heater=()):
         self.s0dirs, self.p1dir, self.grid = s0dirs, p1dir, grid
+        self.heater = list(heater)      # S0 channels (of the grid node) of electric heaters
         self.cache_dir = cache_dir / "hours" if cache_dir else None
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -174,6 +175,7 @@ class HourStore:
             m = rec["minutes"][when.minute]
             m[0] += sum(delta[c] for c in self.grid["house"])
             m[1] += sum(delta[c] for c in self.grid["solar"])
+            m[4] += sum(delta[c] for c in self.heater)
 
     # --- live --------------------------------------------------------------------
 
@@ -215,7 +217,7 @@ class HourStore:
             return None
         try:
             c = json.loads((self.cache_dir / f"{hour:%Y%m%d%H}.json").read_text())
-            if c.get("format") == FORMAT and c.get("grid") == self.grid:
+            if c.get("format") == FORMAT and c.get("grid") == self.grid and c.get("heater") == self.heater:
                 return c["hour"]
         except (OSError, ValueError, KeyError):
             pass
@@ -227,7 +229,7 @@ class HourStore:
         path = self.cache_dir / f"{hour:%Y%m%d%H}.json"
         tmp = path.with_suffix(".tmp")
         try:
-            tmp.write_text(json.dumps({"format": FORMAT, "grid": self.grid, "hour": rec}))
+            tmp.write_text(json.dumps({"format": FORMAT, "grid": self.grid, "heater": self.heater, "hour": rec}))
             tmp.replace(path)
         except OSError as e:        # a cache problem must never stop the live data
             log.warning("cannot cache hour %s: %s", f"{hour:%Y%m%d%H}", e)
@@ -296,7 +298,8 @@ class HourStore:
         now = datetime.now(timezone.utc)
         start = hour_of(now) - timedelta(hours=hours - 1)
         per_min = pulse_wh * 60      # pulses in one minute -> average W
-        out = {"start": start.isoformat(), "step": 60, "house": [], "solar": [], "grid": [], "gridEstimate": []}
+        out = {"start": start.isoformat(), "step": 60, "house": [], "solar": [], "grid": [], "gridEstimate": [],
+               "heater": []}
         hour = start
         while hour <= now:
             rec = self.hours.get(hour)
@@ -314,6 +317,7 @@ class HourStore:
                 out["solar"].append(solar)
                 out["grid"].append(grid)
                 out["gridEstimate"].append(house - solar if grid is None and has_s0 else None)
+                out["heater"].append(round(m[4] * per_min) if has_s0 else None)
             hour += timedelta(hours=1)
         out["gas"] = self.gas_points(start, now)
         return out
