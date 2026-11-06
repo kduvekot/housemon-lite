@@ -284,6 +284,10 @@ def poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf):
 # HTTP: static files from web/, plus /events (SSE) and /api/latest (JSON)
 # ---------------------------------------------------------------------------
 
+# Addresses of the original HouseMon that now lead to the home page
+OLD_PATHS = ("/status",)
+
+
 class Handler(SimpleHTTPRequestHandler):
     hub = None
     hours = None
@@ -301,6 +305,11 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(self.hours.series(n, self.pulse_wh))
         elif self.path == "/api/latest":
             self.send_json({k: v for k, (_, v) in self.hub.items.items()})
+        elif urlsplit(self.path).path.rstrip("/") in OLD_PATHS:
+            self.send_response(301)     # old HouseMon address, kept in bookmarks
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         else:
             super().do_GET()
 
