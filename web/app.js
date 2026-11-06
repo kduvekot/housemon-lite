@@ -321,9 +321,10 @@ function onAirco(msg) {
 function showHeater() {
   if (!airco || !heaterNow || !hasHeater()) return;
   let [v] = row("heat", "heater-now", "Heater group (S0)", ["num"]);
-  setText(v, `${fmt(heaterNow.watt)} W`);
+  setText(v, `≈ ${fmt(heaterNow.watt)} W`);
   [v] = row("heat", "heater-today", "Heater group today", ["num"]);
-  setText(v, `${fmt(heaterNow.today, 2)} kWh`);
+  setText(v, `≈ ${fmt(heaterNow.today, 2)} kWh`);
+  $("#heat-note").hidden = false;
 }
 
 // --- days: today's note and the last completed days ------------------------------

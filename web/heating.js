@@ -51,7 +51,8 @@ async function load() {
   data = { t0, t1, temps, targets, aircoW, heater: series.heater || [], heaterStart: Date.parse(series.start) };
   $("#note").textContent = airco.lines.length
     ? "Airco: its own reading and target (LG, every 30 s when they change), power from LG's energy total (every 5 minutes). " +
-      "Heater: S0 pulses per minute. The airco's sensor sits high up in its own warm air: while heating it reads several degrees above the room."
+      "Heater: an estimate from its group's S0 meter, per minute; that meter also counts the other devices on the group " +
+      "(about 70–150 W with the heater off). The airco's sensor sits high up in its own warm air: while heating it reads several degrees above the room."
     : "No airco data on this Pi (yet).";
   draw();
 }
@@ -142,7 +143,7 @@ function draw() {
   $("#legend").innerHTML =
     `<span><i style="background:${css("--airco")}"></i>airco: own reading, power (LG)</span>` +
     `<span><i style="background:${css("--muted")}"></i>airco target</span>` +
-    `<span><i style="background:${css("--heater")}"></i>heater group (S0)</span>`;
+    `<span><i style="background:${css("--heater")}"></i>heater group (S0, estimate)</span>`;
 }
 
 // value of a step series at time t
