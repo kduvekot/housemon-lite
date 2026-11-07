@@ -31,21 +31,32 @@ async function load() {
   ]);
   const t1 = Date.now(), t0 = t1 - hours * 60 * MINUTE;
   const temps = [], targets = [], aircoW = [];
-  const last = {};                 // LG date -> [time, Wh] of its previous total
+  const last = {};                 // LG date -> its previous total (Wh)
+  let lastUpdate = null;           // time of LG's previous update, of any day
   for (const [time, kind, ...f] of airco.lines) {
     const t = Date.parse(time);
     if (kind === "state") {
       temps.push([t, f[3]]);
       targets.push([t, f[0] === "POWER_ON" ? f[4] : null]);
     } else if (kind === "energy") {
-      const [date, wh] = f, prev = last[date];
-      // a step of LG's total: the average power since its previous total. LG
-      // updates every 5 minutes; a shorter step (the first one seen after the
-      // logger started covers only part of a period) or a longer one (a gap) is left out.
-      if (prev && wh >= prev[1] && t - prev[0] >= 4 * MINUTE && t - prev[0] <= 15 * MINUTE) {
-        aircoW.push([prev[0], t, ((wh - prev[1]) * 3.6e6) / (t - prev[0])]);
+      // Every LG update (every 5 minutes) adds the energy since its previous
+      // update to the day's total. A block runs from the previous update, of
+      // any day, to this one: the first block of a new day starts at the old
+      // day's last update and counts from 0 (LG counts Dutch days; the block
+      // that ends just after midnight belongs to the new day). A new day's 0
+      // before its first update is no block; neither is the first total seen
+      // of a day whose start we did not see (the graph window starts mid-day).
+      const [date, wh] = f;
+      const newDay = !(date in last) && Object.keys(last).some((d) => Number(d) < Number(date));
+      const from = date in last ? last[date] : newDay ? 0 : null;
+      last[date] = wh;
+      if (from === null || wh <= from) continue;
+      // 4 to 15 minutes: a shorter block (the first after the logger started)
+      // covers only part of LG's period; a longer one is a gap
+      if (lastUpdate !== null && t - lastUpdate >= 4 * MINUTE && t - lastUpdate <= 15 * MINUTE) {
+        aircoW.push([lastUpdate, t, ((wh - from) * 3.6e6) / (t - lastUpdate)]);
       }
-      last[date] = [t, wh];
+      lastUpdate = t;
     }
   }
   data = { t0, t1, temps, targets, aircoW, heater: series.heater || [], heaterStart: Date.parse(series.start) };

@@ -274,21 +274,29 @@ let heaterNow = null;      // from the S0 heater channels: { watt, today }
 const MODES = { HEAT: "heating", COOL: "cooling", AUTO: "auto", AIR_DRY: "drying", FAN: "fan only" };
 const hasHeater = () => Object.values(config.s0.channels).some((c) => c.kind === "heater");
 
-// LG's total for the newest day, and the power from its last two totals (LG
-// updates them every 5 minutes; a longer gap gives no power).
+// LG's total for today, and the power over LG's last 5-minute block. The Pi
+// sends the last two totals per day (for the last two days with energy; a
+// day appears with its first update). A block runs from LG's previous update
+// to its last one; the first block of a day starts at the previous day's last
+// update and counts from 0. LG counts Dutch days, like this page.
 function aircoEnergy() {
-  const dates = Object.keys(airco?.energy ?? {}).sort();
+  const e = airco?.energy ?? {};
+  const dates = Object.keys(e).sort();
   if (!dates.length) return null;
-  const pts = airco.energy[dates[dates.length - 1]];
-  const [t2, wh2] = pts[pts.length - 1];
+  const d = new Date();
+  const key = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  const wh = e[key] ? e[key][e[key].length - 1][1] : 0;     // 0 until LG's first update of the day
+  const newest = e[dates[dates.length - 1]], before = dates.length > 1 ? e[dates[dates.length - 2]] : null;
+  let block = null;                      // [from time, from Wh, to time, to Wh]
+  if (newest.length > 1) block = [...newest[0], ...newest[newest.length - 1]];
+  else if (before) block = [before[before.length - 1][0], 0, ...newest[0]];   // the first block of a day
   let watt = null;
-  if (pts.length > 1) {
-    const [t1, wh1] = pts[0];
-    const hours = (Date.parse(t2) - Date.parse(t1)) / 3.6e6;
-    // 4 to 15 minutes: a shorter step (the first after the logger started) covers only part of a period
-    if (hours >= 4 / 60 && hours <= 0.25) watt = (wh2 - wh1) / hours;
+  if (block) {
+    const hours = (Date.parse(block[2]) - Date.parse(block[0])) / 3.6e6;
+    // 4 to 15 minutes: a shorter block (the first after the logger started) covers only part of LG's period
+    if (hours >= 4 / 60 && hours <= 0.25) watt = (block[3] - block[1]) / hours;
   }
-  return { wh: wh2, watt, time: Date.parse(t2) };
+  return { wh, watt };
 }
 
 function onAirco(msg) {
