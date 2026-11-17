@@ -83,9 +83,8 @@ def test_today_from_p1_matches_the_model(page, energy):
 
 
 def test_s0_today_matches_the_model(energy):
-    """The pulses counted today, up to the newest packet, exactly as the model has them.
-    Today comes from the hour records, which count from the last packet before midnight
-    (the completed days in "Last days" count from the first packet after it)."""
+    """The pulses counted today, up to the newest packet, exactly as the model has them:
+    from the last packet before midnight, like the completed days in "Last days"."""
     msg = api("/api/latest")["s0-9"]
     newest = datetime.strptime(msg["time"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=world.UTC)
     start, _ = world.day_bounds(local_today())
