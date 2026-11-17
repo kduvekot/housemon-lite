@@ -1,0 +1,27 @@
+# The tests in tests/ (see tests/README.md): made-up data, the server and
+# browser tests in containers, on a fake clock in spring 2027.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run the tests
+        run: tests/run.sh
+
+      - name: Keep the results and logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: tests/run/results/
+          if-no-files-found: ignore

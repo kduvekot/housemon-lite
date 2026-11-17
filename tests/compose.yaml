@@ -1,0 +1,63 @@
+# The test setup (see tests/README.md); run it with tests/run.sh.
+#   feeder   writes the made-up household's log files as the fake clock runs
+#   server   housemon-lite, reading those files, with tests/local.json
+#   browser  the tests (pytest + Playwright), run once per phase by run.sh
+# feeder and server run under libfaketime; the browser sets its own clock.
+
+x-fake-clock: &fake-clock
+  LD_PRELOAD: /usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1
+  FAKETIME_TIMESTAMP_FILE: /clock/faketime
+  FAKETIME_CACHE_DURATION: "1"
+  DONT_FAKE_MONOTONIC: "1"
+  CLOCK_HISTORY: /clock/history
+  PYTHONPATH: /app/tests/fake/site
+  TZ: UTC
+
+services:
+  feeder:
+    build: { context: ., dockerfile: server.Dockerfile }
+    image: housemon-lite-test-server
+    command: python3 -u /app/tests/fake/feed.py /data
+    environment: *fake-clock
+    volumes:
+      - ..:/app:ro
+      - ./run/clock:/clock:ro
+      - data:/data
+    healthcheck:
+      test: ["CMD", "test", "-f", "/data/ready"]
+      interval: 2s
+      retries: 300
+
+  server:
+    image: housemon-lite-test-server
+    command: >-
+      python3 -B /app/housemon_lite.py --port 3333 --s0-dir /data/s0 --p1-dir /data/p1
+      --airco-dir /data/airco --state-dir /state --local-config /app/tests/local.json
+    environment: *fake-clock
+    volumes:
+      - ..:/app:ro
+      - ./run/clock:/clock:ro
+      - data:/data:ro
+      - state:/state
+    depends_on:
+      feeder: { condition: service_healthy }
+
+  browser:
+    build: { context: ., dockerfile: browser.Dockerfile }
+    image: housemon-lite-test-browser
+    working_dir: /app/tests
+    environment:
+      BASE: http://server:3333
+      CLOCK_DIR: /clock
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ..:/app:ro
+      - ./run/clock:/clock:ro
+      - ./run/results:/results
+      - state:/state:ro
+    depends_on: [server]
+    profiles: [tests]
+
+volumes:
+  data:
+  state:
