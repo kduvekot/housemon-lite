@@ -31,6 +31,8 @@ WRAP = 65536
 EDGE = 600      # seconds: data within 10 min of a day's start/end counts as complete
 GRID_INTERVAL = 30   # seconds per step of the S0 grid estimate
 SETTLE = timedelta(hours=2)   # a day's figures are final this long after it ended
+PRIME = timedelta(minutes=5)  # S0 counting starts from the last packet this close before a day
+DAY_FORMAT = 2                # cached days of another format are computed again
 
 
 # --- time ---------------------------------------------------------------------
@@ -190,6 +192,11 @@ class S0Totals:
                 self.step_start = when
         return delta        # pulses added per channel by this packet ({} for the first one)
 
+    def prime(self, when, node, values):
+        """Start counting from this packet without counting it (the last one before a day)."""
+        self.prev[node] = [values[2 * i] | values[2 * i + 1] << 8 for i in range(0, 16, 2)]
+        self.prev_time[node] = when
+
     def close_step(self):
         if self.step_net > 0:
             self.grid_in += self.step_net
@@ -223,11 +230,16 @@ def parse_s0(line):
 def s0_scan(s0dirs, start, end, totals):
     """Add all S0 lines with start <= time < end to `totals`.
 
+    Counting starts from the last packet in the PRIME minutes before `start`
+    (not counted itself), as the hour records do: a pulse counts on the day of
+    the packet that reports it, so none is lost between two days.
+
     `s0dirs`: the logger's directory plus optional extra ones (e.g. a temporary
     backfill from another receiver); per UTC day their lines are merged by time.
     A packet received twice adds nothing the second time (same counters).
     """
-    day = start.date()
+    since = start - PRIME
+    day = since.date()
     while day <= end.date():
         lines = []
         for s0dir in s0dirs:
@@ -236,14 +248,17 @@ def s0_scan(s0dirs, start, end, totals):
                 with open(path, encoding="ascii", errors="replace") as f:
                     for line in f:
                         p = parse_s0(line)
-                        if p and start <= p[0] < end:
+                        if p and since <= p[0] < end:
                             lines.append(p)
             except OSError:
                 pass
         if len(s0dirs) > 1:
             lines.sort(key=lambda p: p[0])
         for p in lines:
-            totals.add(*p)
+            if p[0] < start:
+                totals.prime(*p)
+            else:
+                totals.add(*p)
         day += timedelta(days=1)
     return totals
 
@@ -275,8 +290,8 @@ def cached_day(day, tz, s0dirs, p1dir, grid, cache_dir):
 
     A completed day is computed once. The cached file is used when it was made
     at least SETTLE after the day ended, is newer than the day's source files
-    and was made with the same house/solar channels; otherwise the day is
-    computed again (e.g. after a backfill was added).
+    and was made with the same house/solar channels and DAY_FORMAT; otherwise
+    the day is computed again (e.g. after a backfill was added).
 
     The logger's S0 file that holds the end of the day keeps growing with the
     next day's lines (files are per UTC day), so it is left out of the check.
@@ -291,7 +306,8 @@ def cached_day(day, tz, s0dirs, p1dir, grid, cache_dir):
         newest = max((p.stat().st_mtime for p in day_sources(day, tz, s0dirs, p1dir)
                       if p != runs_on and p.exists()), default=0)
         cached = json.loads(path.read_text())
-        if made > newest and made > (end + SETTLE).timestamp() and cached.get("grid") == grid:
+        if (made > newest and made > (end + SETTLE).timestamp() and cached.get("grid") == grid
+                and cached.get("format") == DAY_FORMAT):
             return cached["summary"]
     except (OSError, ValueError, KeyError):
         pass
@@ -306,7 +322,7 @@ def save_day(summary, grid, cache_dir):
         return
     path = cache_dir / f"{summary['date']}.json"
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"grid": grid, "summary": summary}))
+    tmp.write_text(json.dumps({"format": DAY_FORMAT, "grid": grid, "summary": summary}))
     tmp.replace(path)
 
 
