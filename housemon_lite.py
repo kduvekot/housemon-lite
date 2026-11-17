@@ -159,6 +159,8 @@ class DayStore:
         self.hours = hours
         self.lock = threading.Lock()
         self.history = []           # completed days, newest first
+        self.loaded = False         # the completed days of the start-up are there
+        self.settled = None         # the last day stored in the cache once it was final
         self.start_today(daystats.local_today(tz))
 
     def start_today(self, day):
@@ -175,13 +177,36 @@ class DayStore:
 
     def load_history(self):
         """Background thread at start-up: the last completed days, newest first.
-        Days already in the cache are only read; the others are computed once."""
+        Days already in the cache are only read; the others are computed once.
+        Each day is shown as soon as it is there (computing one takes minutes on a Pi 1)."""
         for back in range(1, HISTORY_DAYS + 1):
             day = self.today - timedelta(days=back)
             summary = daystats.cached_day(day, self.tz, self.s0dirs, self.p1dir, self.grid, self.cache_dir)
             with self.lock:
                 self.history.append(summary)
+            self.publish()
         log.info("history ready: %s .. %s", self.history[-1]["date"], self.history[0]["date"])
+        self.loaded = True
+
+    def store_settled(self):
+        """Once yesterday is final (daystats.SETTLE after it ended), store it in the
+        cache, computed from the log files as at start-up, so that a restart reads it
+        instead of computing it again. Its figures from midnight (from the hour
+        records) are replaced by the stored ones. Runs once a day, in the background."""
+        day = self.today - timedelta(days=1)
+        if self.cache_dir is None or not self.loaded or self.settled == day:
+            return
+        _, end = daystats.day_bounds(day, self.tz)
+        if datetime.now(timezone.utc) < end + daystats.SETTLE:
+            return
+        self.settled = day
+        threading.Thread(target=self._store, args=(day,), daemon=True).start()
+
+    def _store(self, day):
+        summary = daystats.cached_day(day, self.tz, self.s0dirs, self.p1dir, self.grid, self.cache_dir)
+        with self.lock:
+            self.history = [summary if h["date"] == summary["date"] else h for h in self.history]
+        log.info("%s is final and in the cache", day)
         self.publish()
 
     def on_p1(self, telegram):
@@ -218,10 +243,8 @@ class DayStore:
         }
         with self.lock:
             self.history = ([done] + self.history)[:HISTORY_DAYS]
-        try:
-            daystats.save_day(done, self.grid, self.cache_dir)
-        except OSError as e:
-            log.warning("cannot cache %s: %s", done["date"], e)
+        # Not cached now: a cached day must be final, which it is SETTLE after
+        # midnight (a file saved now would never count; see store_settled).
         self.start_today(day)
         log.info("new day %s", day)
         self.publish()
@@ -327,6 +350,7 @@ def poll_loop(hub, s0, p1, days, hours, airco):
 def poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf):
     """One round: read what the loggers added, update the figures, publish."""
     days.check_midnight()
+    days.store_settled()
 
     # S0: complete lines; count them all, show the newest one per node
     s0_buf += s0.poll().decode("ascii", "replace")
