@@ -51,6 +51,9 @@ DEFAULT_S0_EXTRA = "/var/lib/housemon-lite-backfill/s0"
 # YYYY/YYYYMMDD.csv (UTC); read only if the directory exists.
 DEFAULT_AIRCO_DIR = "/var/lib/housemon-lite-airco"
 AIRCO_HOURS = 36        # hours of airco lines /api/airco returns at most
+# Optional local settings that stay out of the repo (home-specific values, such
+# as the net-metering balance); merged over web/config.json at start-up.
+DEFAULT_LOCAL_CONFIG = "/etc/housemon-lite/local.json"
 
 S0_LINE = re.compile(r"^L (\S+) \S+ (OK (\d+)(?: \d+)*)\s*$")
 P1_TELEGRAM = re.compile(rb"/[^!]*![0-9A-Fa-f]{4}\r?\n")
@@ -361,7 +364,8 @@ def poll_once(hub, s0, p1, days, hours, s0_buf, p1_buf):
 
 
 # ---------------------------------------------------------------------------
-# HTTP: static files from web/, plus /events (SSE) and /api/latest (JSON)
+# HTTP: static files from web/, plus /events (SSE), /api/latest (JSON) and
+# /config.json (web/config.json with the local settings merged in)
 # ---------------------------------------------------------------------------
 
 # Addresses of the original HouseMon that now lead to the home page
@@ -373,10 +377,13 @@ class Handler(SimpleHTTPRequestHandler):
     hours = None
     airco = None
     pulse_wh = 0.5
+    config = None       # web/config.json with the local settings merged in
 
     def do_GET(self):
         if self.path == "/events":
             self.send_events()
+        elif urlsplit(self.path).path == "/config.json":
+            self.send_json(self.config)
         elif self.path.startswith("/api/series"):
             query = parse_qs(urlsplit(self.path).query)
             try:
@@ -441,6 +448,15 @@ class Handler(SimpleHTTPRequestHandler):
         log.debug("%s %s", self.address_string(), fmt % args)
 
 
+def merge(base, extra):
+    """Merge dict `extra` into `base` in place: nested dicts key by key, other values replace."""
+    for key, value in extra.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge(base[key], value)
+        else:
+            base[key] = value
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="small live view of S0 and P1 data")
     p.add_argument("--bind", default="0.0.0.0", help="address to listen on (default: all)")
@@ -455,15 +471,26 @@ def main(argv=None):
     p.add_argument("--state-dir", default=os.environ.get("STATE_DIRECTORY"),
                    help="where completed days are cached (default: $STATE_DIRECTORY from systemd; none: no cache)")
     p.add_argument("--web-dir", default=str(Path(__file__).resolve().parent / "web"), help="static files")
+    p.add_argument("--local-config", default=DEFAULT_LOCAL_CONFIG,
+                   help=f"local settings merged over config.json (default: {DEFAULT_LOCAL_CONFIG}, if it exists)")
     p.add_argument("--debug", action="store_true", help="log every request")
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+    # The page's settings: web/config.json from the repo, with the local file
+    # (if any) merged over it. Read once; edit the local file, then restart.
+    config = json.loads((Path(args.web_dir) / "config.json").read_text())
+    local = Path(args.local_config)
+    if local.is_file():
+        merge(config, json.loads(local.read_text()))
+    else:
+        local = None
+
     # Which S0 channels are house and solar, for the grid estimate of days
     # without P1 data; the page's own config.json says so.
-    cfg = json.loads((Path(args.web_dir) / "config.json").read_text())["s0"]
+    cfg = config["s0"]
     grid = {"node": cfg["node"],
             "house": [int(c) for c, i in cfg["channels"].items() if i.get("kind") == "house"],
             "solar": [int(c) for c, i in cfg["channels"].items() if i.get("kind") == "solar"]}
@@ -486,11 +513,13 @@ def main(argv=None):
     Handler.hours = hours
     Handler.airco = airco
     Handler.pulse_wh = cfg.get("pulseWh", 0.5)
+    Handler.config = config
     server = ThreadingHTTPServer((args.bind, args.port),
                                  functools.partial(Handler, directory=args.web_dir))
     server.daemon_threads = True
-    log.info("serving %s on %s:%d (S0 %s, P1 %s, airco %s, days in %s, cache %s)",
-             args.web_dir, args.bind, args.port, " + ".join(map(str, s0dirs)), args.p1_dir, airco.base, args.tz, cache_dir)
+    log.info("serving %s on %s:%d (S0 %s, P1 %s, airco %s, days in %s, cache %s, local settings %s)",
+             args.web_dir, args.bind, args.port, " + ".join(map(str, s0dirs)), args.p1_dir, airco.base, args.tz,
+             cache_dir, local)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

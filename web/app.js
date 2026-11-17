@@ -237,14 +237,16 @@ function decodeP1(msg) {
     $("#now-grid-note").textContent = net < 0 ? "from P1 · delivering" : "from P1 · taking";
   }
 
+  const now = totals({
+    "1.8.1": num(f["1-0:1.8.1"]?.[0]), "1.8.2": num(f["1-0:1.8.2"]?.[0]),
+    "2.8.1": num(f["1-0:2.8.1"]?.[0]), "2.8.2": num(f["1-0:2.8.2"]?.[0]),
+    gas: f.gas ? num(f.gas[1]) : undefined,
+  });
+  if (f["1-0:1.8.1"] && f["1-0:2.8.1"]) showNetMetering(now);
+
   // Today = meter now minus the meter at midnight (sent by the Pi).
   const first = days?.today?.p1First;
   if (first) {
-    const now = totals({
-      "1.8.1": num(f["1-0:1.8.1"]?.[0]), "1.8.2": num(f["1-0:1.8.2"]?.[0]),
-      "2.8.1": num(f["1-0:2.8.1"]?.[0]), "2.8.2": num(f["1-0:2.8.2"]?.[0]),
-      gas: f.gas ? num(f.gas[1]) : undefined,
-    });
     const start = totals(first);
     const taken = now.taken - start.taken;
     const delivered = now.delivered - start.delivered;
@@ -264,6 +266,31 @@ function decodeP1(msg) {
     if (now.gas !== null && start.gas !== null) setText($("#today-gas"), fmt(now.gas - start.gas, 2));
   }
   sources.p1.last = msg.seen * 1000;
+}
+
+// --- net metering: the balance of the settlement period ----------------------------
+// Only when the Pi's local settings have a "settlement" (home-specific, so not
+// in the repo): the balance in kWh at a reference reading of this meter
+// (negative: more delivered than taken) and the meter's totals (T1+T2) at that
+// moment. Balance now = that balance + taken since − delivered since. "Per day"
+// spreads a surplus over the time left until `until` (local midnight, exclusive).
+function showNetMetering(now) {
+  const s = config.settlement;
+  if (!s) return;
+  const end = Date.parse(`${s.until}T00:00:00`);           // no offset: local time
+  const left = (end - Date.now()) / 86400000;
+  $("#netm").hidden = !(left > 0);                         // the period is over: nothing to show
+  if (!(left > 0)) return;
+  if (s.title) $("#netm-title").textContent = s.title;
+  const last = new Date(end - 86400000);
+  $("#netm-period").textContent = `· ${dayName(s.from)} – ${last.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" })}`;
+  const balance = s.balance + (now.taken - s.reading.taken) - (now.delivered - s.reading.delivered);
+  const surplus = balance < 0;
+  $("#netm-label").textContent = surplus ? "Surplus" : "Net taken";
+  setText($("#netm-balance"), fmt(Math.abs(balance)));    // whole kWh: fits a phone's tile
+  setText($("#netm-perday"), surplus ? fmt(-balance / left, 1) : "–");
+  setText($("#netm-days"), fmt(left, 1));
+  $("#netm-end").textContent = `until ${last.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })}`;
 }
 
 // --- heating: the airco (LG, via the compact extract) and the electric heater (S0) ---
