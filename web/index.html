@@ -35,6 +35,16 @@
       <p class="note" id="today-note"></p>
     </section>
 
+    <!-- only with a "settlement" in the Pi's local settings -->
+    <section class="band" id="netm" hidden>
+      <h2 class="band-title"><span id="netm-title">Net metering</span> <small id="netm-period"></small></h2>
+      <div class="tiles">
+        <div class="tile"><h3 id="netm-label">Surplus</h3><p><span id="netm-balance" class="mid">–</span> kWh</p><small>from P1</small></div>
+        <div class="tile"><h3>Per day</h3><p><span id="netm-perday" class="mid">–</span> kWh</p><small>net, to reach 0</small></div>
+        <div class="tile"><h3>Days left</h3><p><span id="netm-days" class="mid">–</span></p><small id="netm-end"></small></div>
+      </div>
+    </section>
+
     <div class="column">
     <section class="card">
       <h2 id="s0-title">S0 meters</h2>

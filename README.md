@@ -84,6 +84,42 @@ between the last two pulses (milliseconds; above 60000, `t - 60000` seconds).
 Channel names, which channels count as house or solar, the pulse value, the
 stop factor and the RF12 node id are in `web/config.json`.
 
+## Local settings
+
+Values that belong to one house and not in this public repo go in a local
+file on the Pi, `/etc/housemon-lite/local.json` (or `--local-config`). At
+start-up the server merges it over `web/config.json` and serves the result as
+`/config.json`; without the file the page works as before. After editing it,
+restart the service.
+
+**Net metering** (optional): the balance of the settlement period, worked out
+in the browser from the P1 meter's totals. The band only appears with a
+`settlement` and only until its end. Example with made-up numbers:
+
+```json
+{
+  "settlement": {
+    "title": "Net metering 2026",
+    "from": "2026-01-15",
+    "until": "2027-01-01",
+    "balance": -1000,
+    "reading": { "taken": 0.0, "delivered": 0.0 }
+  }
+}
+```
+
+- `balance`: kWh taken minus delivered from the start of the period up to a
+  reference reading of this meter; negative means more delivered than taken.
+  It can include an earlier meter's readings.
+- `reading`: this meter's totals (tariff 1 + tariff 2) at that reference
+  reading: `taken` is 1.8.1 + 1.8.2, `delivered` is 2.8.1 + 2.8.2.
+- `from`: the start of the period (for display only); `until`: the day after
+  the last day (local midnight).
+
+The balance now is `balance + (taken now − reading.taken) − (delivered now −
+reading.delivered)`. A surplus is spread over the time left: the net kWh per
+day that would end the period at 0.
+
 ## Install
 
 ```sh
@@ -122,13 +158,16 @@ ssh <user>@<pi> 'sudo install -m 0644 /tmp/graph.js /tmp/style.css /opt/housemon
   service's state directory, so they are not recalculated.
 - **The unit file**: install it in `/etc/systemd/system/`, then
   `sudo systemctl daemon-reload` and restart the service.
+- **Local settings** (`/etc/housemon-lite/local.json`, see above): edit,
+  then restart the service.
 
 Check that the Pi serves what is in the repo:
 
 ```sh
-for f in index.html app.js graph.html graph.js style.css config.json; do
+for f in index.html app.js graph.html graph.js style.css; do
   [ "$(sha256sum < web/$f)" = "$(curl -s http://<pi>:3333/$f | sha256sum)" ] && echo "$f same" || echo "$f DIFFERENT"
 done
+curl -s http://<pi>:3333/config.json   # config.json with the local settings merged in
 ```
 
 ## Files
