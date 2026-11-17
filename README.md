@@ -183,3 +183,4 @@ curl -s http://<pi>:3333/config.json   # config.json with the local settings mer
 | `web/heating.html`, `web/heating.js` | the heating graph (airco and heater group) |
 | `web/config.json` | channel names and settings |
 | `housemon-lite.service` | systemd unit |
+| `tests/` | the tests: made-up data, the server and the page in containers, on a fake clock (see `tests/README.md`); `tests/run.sh` runs them, GitHub does too for every pull request (`.github/workflows/tests.yml`) |

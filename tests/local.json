@@ -1,0 +1,9 @@
+{
+  "settlement": {
+    "title": "Net metering 2027",
+    "from": "2027-01-01",
+    "until": "2028-01-01",
+    "balance": -1234.5,
+    "reading": { "taken": 8000.0, "delivered": 3500.0 }
+  }
+}
