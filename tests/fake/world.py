@@ -369,14 +369,16 @@ def day_bounds(d):
 def expected_day(energy, d):
     """The figures of a local day as the page shows them in "Last days".
 
-    S0: the pulses counted from packet to packet within the day (the pulses
-    between the last packet before midnight and the first one after it belong
-    to neither day); after the node restarts its counters count from 0.
+    S0: the pulses counted from packet to packet, starting from the last packet
+    before midnight (if there is one in the 5 minutes before), so a pulse counts
+    on the day of the packet that reports it and none is lost between two days;
+    after the node restarts its counters count from 0.
     P1: last valid telegram of the day minus the first one.
     """
     start, end = day_bounds(d)
     pulses = {ch: 0 for ch in range(1, 9)}
-    prev = None
+    before = list(s0_times(start - timedelta(minutes=5), start))
+    prev = (before[-1], s0_counts(energy, before[-1])) if before else None
     first = last = None
     for t in s0_times(start, end):
         c = s0_counts(energy, t)

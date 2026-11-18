@@ -129,6 +129,8 @@ def kwh_text(text):
 def check_day_row(row, classes, h, exp):
     """One "Last days" row against the model's day and the server's own figures."""
     d = date.fromisoformat(exp["date"])
+    got = {int(c): n for c, n in h["s0"]["pulses"]["9"].items()}
+    assert got == exp["pulses"], f"S0 pulses of {exp['date']} (server) against the model"
     assert row[0] == day_name(d)
     assert row[1] == fmt(exp["house_kwh"], 2), "house"
     assert row[2] == fmt(exp["solar_kwh"], 2), "solar"
